@@ -13,11 +13,18 @@ DECLARE
   last_load_id integer;	-- Id posledního loadu do etl tabulky pro IDS
   i_cnt integer;				-- Počet záznamů ke zpracování
   navteqver_str varchar;-- Poslední navteqver z params()
+  debug_mode boolean;		-- Řídí debug mód
   
 BEGIN
 -------------------------------------------------------------------------------------------------------------------
 --** Tady je NOTICE **--
 RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Function auto_rel_pub_ccf start.';
+
+-- Init proměnných
+debug_mode = true;
+
+--** Tady je NOTICE **--
+RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Debug mode: ' || debug_mode;
 
 -- Načtení aktuální navteqver pro kontrolu správného navteqver u panelů
 SELECT navteq_version INTO navteqver_str FROM fnc.f_params();
@@ -115,11 +122,11 @@ IF i_cnt > 0 THEN
 --** Tady je NOTICE **--	
   RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Updating VACs.';
 	
-  --Doupdate VAC k panelům, bere se transptype = 'ALL' a periodid = 1, proto se pole jmenuje "vac_all_1"
+  --Doupdate VAC k panelům, bere se transptype = 'ALL' a periodid = 2, proto se pole jmenuje "vac_all_2"
   UPDATE
     rel_pub.crp_all_panel x
   SET
-    vac_all_1 = sqry.vac
+    vac_all_2 = sqry.vac
   FROM
   (
     SELECT DISTINCT ON (v.mid)
@@ -151,8 +158,8 @@ IF i_cnt > 0 THEN
   FROM 
     rel_pub.crp_all_panel 
   WHERE
-    (vac_all_1 = 0
-    OR vac_all_1 IS NULL
+    (vac_all_2 = 0
+    OR vac_all_2 IS NULL
     OR err_vac_res IS NOT NULL)
     AND pid NOT IN (SELECT pid FROM rel_pub.crp_no_calc)
   ;
@@ -164,21 +171,18 @@ IF i_cnt > 0 THEN
 
 	-- Zde se vytvoří crp_ims_input
   PERFORM rel_pub.create_ims_input_ccf();
-	--SELECT * FROM rel_pub.create_ims_input_ccf();
+
 --** Tady je NOTICE **--	
   RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Calculate intersection.';
 
-  -- Výpočet všech intersekcí, prusecik kolacu bufferu a tripu.
+  ---- Výpočet všech intersekcí, prusecik kolacu bufferu a tripu. (Časově náročné).
   TRUNCATE rel_pub.crp_all_intersection;
   INSERT INTO rel_pub.crp_all_intersection
-  	(mid, sid, week_day_name, week_day_type)
   SELECT
-    a.mid, b.sid, b.week_day_name, b.week_day_type
+    a.mid, b.sid
   FROM
     rel_pub.crp_all_panel a
-    INNER JOIN rel_pub.crp_routing b 
-      ON a.buffer_geom && b.geom       					-- Indexový test obálek
-      AND ST_Intersects(a.buffer_geom, b.geom)	-- Přesný prostorový test
+    INNER JOIN rel_pub.crp_routing b ON st_intersects(a.buffer_geom, b.geom) AND a.buffer_geom && b.geom
   ;
 	
 --** Tady je NOTICE **--
@@ -202,8 +206,7 @@ IF i_cnt > 0 THEN
   --Celkový seznam, naplnění tabulky, nejprve ty, co mají průsečík s trasou, pak se sem pak přidají panely bez průsečíku
   TRUNCATE rel_pub.crp_evidence;
   INSERT INTO rel_pub.crp_evidence
-  	(mid, sid, week_day_name, week_day_type)
-  SELECT mid, sid, week_day_name, week_day_type
+  SELECT mid, sid
   FROM rel_pub.crp_all_intersection;
 	
 --** Tady je NOTICE **--
@@ -217,7 +220,7 @@ IF i_cnt > 0 THEN
     pid,
     the_geom,
     buffer_geom,
-    vac_all_1
+    vac_all_2
   FROM
     rel_pub.crp_all_panel 
   WHERE intersection_type = 'SUBSTITUTE';
@@ -231,9 +234,9 @@ IF i_cnt > 0 THEN
       -- 1. Pro každý bod T2 najdeme 20 geometricky nejbližších bodů T1
       SELECT
           t2.mid AS mid_woi,
-          t2.vac_all_1 AS vac_woi,
+          t2.vac_all_2 AS vac_woi,
           t1.mid AS mid_near,
-          t1.vac_all_1 AS vac_near,
+          t1.vac_all_2 AS vac_near,
           ST_Distance(t2.the_geom, t1.the_geom) AS distance,
           ROW_NUMBER() OVER (
               PARTITION BY t2.mid
@@ -242,8 +245,9 @@ IF i_cnt > 0 THEN
       FROM
           rel_pub.crp_panel_wo_its t2,
           rel_pub.crp_all_panel t1 -- Používáme implicitní JOIN pro KNN dotaz
-      WHERE ST_DWithin(t2.the_geom, t1.the_geom, 5000) -- Volitelné omezení maximální vzdálenosti (např. 5 km)
-      AND t1.intersection_type = 'ORIGINAL'
+      -- WHERE ST_DWithin(t2.geom, t1.geom, 5000) -- Volitelné omezení maximální vzdálenosti (např. 5 km)
+      WHERE
+        t1.intersection_type = 'ORIGINAL'
   )
   , best_match AS (
       -- 2. Z 20 nejbližších vybereme ten s minimálním rozdílem hodnot
@@ -279,7 +283,8 @@ IF i_cnt > 0 THEN
   
   INSERT INTO rel_pub.crp_evidence  
   SELECT 
-    mid_woi, sid, b.week_day_name, b.week_day_type
+    mid_woi,
+    sid
   FROM 
     rel_pub.crp_nearest20 a
     JOIN rel_pub.crp_all_intersection b ON a.best_mid_near = b.mid
@@ -298,13 +303,15 @@ IF i_cnt > 0 THEN
       sid,
       respondent_id,
       routingmode,
-      pid)
+      pid,
+      desc_text)
   SELECT 
     e.mid,
     e.sid,
     o.respondent_id,
     o.routingmode,
-    m.pid
+    m.pid,
+    e.desc_text
   FROM 
     rel_pub.crp_evidence e
     JOIN rel_pub.crp_routing o ON e.sid = o.sid
@@ -321,38 +328,31 @@ IF i_cnt > 0 THEN
   TRUNCATE TABLE rel_pub.crp_ims_temp;
 
 	-- Optimalizováno, místo původních 4 dotazů na jeden, všechny tripy vloženy do crp_routing
-  INSERT INTO rel_pub.crp_ccf_output (pid, sid, respweight, modality, dayofweek, respondent_id, ts_rots)  
-  SELECT 
+  INSERT INTO rel_pub.crp_ccf_output (pid, sid, respweight, modality, dayofweek, sbjnum)
+	SELECT 
     ci.pid, 
     ci.sid, 
     rwi.benchwgt_pp, 
     ci.routingmode, 
-    rou.week_day_name,
-    rwi.respondent_id,
-    --ftv.prob, rwi.benchwgt_pp,
-    rwi.benchwgt_pp * ftv.prob AS ts_rots
+    rou.dayofweek,
+    rwi.sbjnum
   FROM 
     rel_pub.crp_routing rou
     JOIN rel_pub.crp_ccf_input ci ON rou.sid = ci.sid
-    JOIN rel_pub.crp_resp_weight_input rwi ON rou.respondent_id = rwi.respondent_id
-    JOIN rel_pub.crp_freq_trips_vector ftv ON rou.week_day_type = ftv.weekdaytype
-  WHERE rou.trip_freq > ftv.freq_from
-    AND rou.trip_freq <= ftv.freq_to
-    AND rou.week_day_name = ftv.weekdayname
-    --AND ci.pid = 68
-    --AND rou.tripid = 41323
-    --AND rou.sid = 1683
-    AND 
-      ci.respondent_id = rwi.respondent_id
-    ;
+    JOIN rel_pub.crp_resp_weight_input rwi ON rou.sbjnum = rwi.sbjnum
+  WHERE  
+    ci.sbjnum = rwi.sbjnum
+  ;
 
-  --UPDATE rel_pub.crp_ccf_output SET dayofweek = LEFT(dayofweek,2);
+  -- qry000_05_update_weekDay
+  UPDATE rel_pub.crp_ccf_output SET dayofweek = LEFT(dayofweek,2);
 	
 --** Tady je NOTICE **--
   RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Trips filled to crp_ccf_output.';
+	
 
   -- Naplní crp_ims_temp
-  /*INSERT INTO rel_pub.crp_ims_temp ( 
+  INSERT INTO rel_pub.crp_ims_temp ( 
     pid, mid, pnlkey, pnldesc2, 
     facepid, ownid_desc, pnlillum_desc, 
     pnlmotion_desc, frmwidth, frmheight, pnlvaienv, 
@@ -364,7 +364,7 @@ IF i_cnt > 0 THEN
     pnlmotion_desc, frmwidth, frmheight, pnlvaienv, 
     pnldesc, district, vac_brutto_daily_all*7, vac_brutto_daily_veh*7, 
     vac_brutto_daily_ped*7, rots_brutto_daily_all*7, rots_brutto_daily_veh*7, rots_brutto_daily_ped*7
-  FROM rel_pub.crp_ims_input;*/
+  FROM rel_pub.crp_ims_input;
 
 --** Tady je NOTICE **--
   RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Table crp_ims_temp filled.';
@@ -413,59 +413,116 @@ IF i_cnt > 0 THEN
 --** Tady je NOTICE **--
 	RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Table crp_ccf_output updated.';
 	
-  -- Final load
+  IF NOT debug_mode THEN
+  	-- Final load
 --** Tady je NOTICE **--
-  RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Final load.';
+    RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Final load.';
 
-  exe_str = 'INSERT INTO 
-                rel_pub.etl_ccf_rel_pub
-               (
-                pid,
-                mid,
-                facepid,
-                faceid,
-                respondent_id,
-                weekdayname,
-                resp_weight,
-                va,
-                vac,
-                load_id
-              ) 
-                SELECT 
-                  crp_ccf_output.pid,
-                  crp_ims_temp.mid, 
-                  crp_ims_temp.facepid, 
-                  0 AS facepid, 
-                  crp_ccf_output.sbjnum, 
-                  LOWER(crp_ccf_output.dayofweek), 
-                  crp_ccf_output.respweight, 
-                  crp_ccf_output.va, 
-                  round(crp_ccf_output.vac), ' || last_load_id || '
-                FROM rel_pub.crp_ccf_output 
-                  INNER JOIN rel_pub.crp_ims_temp ON crp_ccf_output.pid = crp_ims_temp.pid; ';
-  EXECUTE exe_str;
+    exe_str = 'INSERT INTO 
+                  rel_pub.etl_ccf_rel_pub
+                 (
+                  pid,
+                  mid,
+                  facepid,
+                  faceid,
+                  respondent_id,
+                  weekdayname,
+                  resp_weight,
+                  va,
+                  vac,
+                  load_id
+                ) 
+                  SELECT 
+                    crp_ccf_output.pid,
+                    crp_ims_temp.mid, 
+                    crp_ims_temp.facepid, 
+                    0 AS facepid, 
+                    crp_ccf_output.sbjnum, 
+                    LOWER(crp_ccf_output.dayofweek), 
+                    crp_ccf_output.respweight, 
+                    crp_ccf_output.va, 
+                    round(crp_ccf_output.vac), ' || last_load_id || '
+                  FROM rel_pub.crp_ccf_output 
+                    INNER JOIN rel_pub.crp_ims_temp ON crp_ccf_output.pid = crp_ims_temp.pid; ';
+    EXECUTE exe_str;
 		
-  -- Evidence zpracovaných panelů v jednotlivých loadech
-  INSERT INTO 
-    rel_pub.crp_geom_panel_log
-  (
-    mid,
-    pid,
-    the_geom,
-    buffer_geom,
-    load_id,
-    desc_text
-  )
-  SELECT 
-    mid,
-    pid,
-    the_geom,
-    buffer_geom,
-    last_load_id,
-    'Processed by load'
-  FROM 
-    rel_pub.crp_all_panel
-  ;
+		-- Evidence zpracovaných panelů v jednotlivých loadech
+		INSERT INTO 
+			rel_pub.crp_geom_panel_log
+		(
+			mid,
+			pid,
+			the_geom,
+			buffer_geom,
+			load_id,
+			desc_text
+		)
+		SELECT 
+			mid,
+			pid,
+			the_geom,
+			buffer_geom,
+			last_load_id,
+			'Processed by load'
+		FROM 
+			rel_pub.crp_all_panel
+		;
+	ELSE
+  	-- Debug load
+--** Tady je NOTICE **--
+    RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Debug load.';
+
+		TRUNCATE rel_pub.dbg_etl_ccf_rel_pub;
+    exe_str = 'INSERT INTO 
+                  rel_pub.dbg_etl_ccf_rel_pub
+                 (
+                  pid,
+                  mid,
+                  facepid,
+                  faceid,
+                  respondent_id,
+                  weekdayname,
+                  resp_weight,
+                  va,
+                  vac,
+                  load_id
+                ) 
+                  SELECT 
+                    crp_ccf_output.pid,
+                    crp_ims_temp.mid, 
+                    crp_ims_temp.facepid, 
+                    0 AS facepid, 
+                    crp_ccf_output.sbjnum, 
+                    LOWER(crp_ccf_output.dayofweek), 
+                    crp_ccf_output.respweight, 
+                    crp_ccf_output.va, 
+                    round(crp_ccf_output.vac), ' || last_load_id || '
+                  FROM rel_pub.crp_ccf_output 
+                    INNER JOIN rel_pub.crp_ims_temp ON crp_ccf_output.pid = crp_ims_temp.pid; ';
+    EXECUTE exe_str;
+		
+		-- Evidence zpracovaných panelů v jednotlivých loadech
+		INSERT INTO 
+			rel_pub.dbg_geom_panel_log
+		(
+			mid,
+			pid,
+			the_geom,
+			buffer_geom,
+			load_id,
+			desc_text
+		)
+		SELECT 
+			mid,
+			pid,
+			the_geom,
+			buffer_geom,
+			last_load_id,
+			'Processed by load'
+		FROM 
+			rel_pub.crp_all_panel
+		;
+		END IF;
   
 --** Tady je NOTICE **--
 	RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Log of processed panels.';
