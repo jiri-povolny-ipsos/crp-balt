@@ -61,7 +61,6 @@ BEGIN
   WHERE 
     (c.stamp > CURRENT_DATE - 1 AND c.status = 3 AND c.timeattid = 0)
     OR a.pid IN(SELECT pid FROM rel_pub.crp_missing)
-    OR (c.stamp > CURRENT_DATE - 1 AND c.status = 1 AND c.ownid = 51 AND c.timeattid = 0)
   ;
 
   -- INSERT panelů, které byly poslední den "oddemolovány".
@@ -86,7 +85,6 @@ BEGIN
     INNER JOIN pnl.mv_pnl_main_maxdate c ON a.mid = c.mid
   WHERE 
     (c.status = 3 AND a.pid IN (SELECT pid FROM pnl.pnl_timeatts t WHERE t.stamp > CURRENT_DATE - 1 AND t.timeattid = 0))
-    OR (c.status = 1 AND a.pid IN (SELECT pid FROM pnl.pnl_timeatts t WHERE t.stamp > CURRENT_DATE - 1 AND t.timeattid = 0) AND c.ownid = 51 AND c.timeattid = 0)
   ;
 
 --** Tady je NOTICE **--	
@@ -119,11 +117,11 @@ BEGIN
 --** Tady je NOTICE **--	
   RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Updating VACs.';
 
-  --Doupdate VAC k panelům, bere se transptype = 'ALL' a periodid = 2, proto se pole jmenuje "vac_all_2"
+  --Doupdate VAC k panelům, bere se transptype = 'ALL' a periodid = 1, proto se pole jmenuje "vac_all_1"
   UPDATE
     rel_pub.crp_geom_panel x
   SET
-    vac_all_2 = sqry.vac
+    vac_all_1 = sqry.vac
   FROM
   (
     SELECT DISTINCT ON (v.mid)
@@ -134,7 +132,7 @@ BEGIN
       vai.vai_vac_res v
       JOIN res.res_online_ea_output_round r ON v.vacid = r.vacid
     WHERE
-      r.periodid = 2
+      r.periodid = 1
       AND r.transptype = 'ALL'
     ORDER BY
       v.mid,
@@ -165,7 +163,7 @@ BEGIN
   FROM 
     rel_pub.crp_geom_panel 
   WHERE
-    (vac_all_2 = 0 OR vac_all_2 IS NULL OR err_vac_res IS NOT NULL)
+    (vac_all_1 = 0 OR vac_all_1 IS NULL OR err_vac_res IS NOT NULL)
     AND pid NOT IN (SELECT pid FROM rel_pub.crp_no_calc_inc) -- Vkládám jen ty, co v tabulce ještě nejsou.
   ;
   -- A vyřadím je z dalších akcí.
@@ -198,10 +196,10 @@ BEGIN
         ROUND(s.x2::numeric, 6) as x2, ROUND(s.y2::numeric, 6) as y2
     FROM vai.vai_seg s
     INNER JOIN TargetMids tm ON s.mid = tm.mid
-    -- Přidání JOINu pro filtraci linetype
-    INNER JOIN topo.topo_streets_pli b ON s.navteqid = b.link_id AND s.navteqver = b.navteqver
+    -- Přidání JOINu pro filtraci linetype (Comment, BALT zatím nemá)
+    /*INNER JOIN topo.topo_streets_pli b ON s.navteqid = b.link_id AND s.navteqver = b.navteqver
     WHERE 
-        b.linetype NOT IN ('70', '71', '72')
+        b.linetype NOT IN ('70', '71', '72')*/
   ),
   UniqueNodes AS (
     SELECT mid, x1 AS x, y1 AS y FROM CleanedSegments
@@ -227,10 +225,10 @@ BEGIN
     FROM Stats
   )
   UPDATE
-  rel_pub.crp_no_calc_inc n
+  	rel_pub.crp_no_calc_inc n
   SET 
-  complexity_index = sqry.complexity_index,
-  routing_difficulty = sqry.routing_difficulty
+  	complexity_index = sqry.complexity_index,
+  	routing_difficulty = sqry.routing_difficulty
   FROM
   (
     SELECT 
@@ -308,7 +306,7 @@ BEGIN
   -- Vložím do queue
 
   INSERT INTO oper.oper_vac_queue (vacid,faceid,mid,usrn,stamp_in_queue,priority,rmloadid,temp_table)
-  SELECT 0, sqry.faceid, sqry.mid, 'init_continous_release', CURRENT_TIMESTAMP, 1, 0, 50020 FROM
+  SELECT 0, sqry.faceid, sqry.mid, 'init_continous_release', CURRENT_TIMESTAMP, 1, 0, 50820 FROM
     ( 
       SELECT DISTINCT ON (pid)
         p.pid,
@@ -346,7 +344,7 @@ BEGIN
       JOIN rel_pub.crp_no_calc_inc n ON p.pid = n.pid
     WHERE
       q.usrn = 'init_continous_release'
-      AND q.temp_table = 50020
+      AND q.temp_table = 50820
       AND q.stamp_end IS NOT NULL
       AND n.err_vac_res IS NULL
       AND n.ignore = FALSE
@@ -454,12 +452,11 @@ BEGIN
                   FROM pnl.mv_pnl_main_maxdate 
                   WHERE 
                   (status = 3 AND timeattid = 0)
-                  OR (status = 1 AND ownid = 51 AND timeattid = 0)
                 ) m
                 RIGHT JOIN 
                 (SELECT DISTINCT pid 
                   FROM res.res_release_publish 
-                  WHERE rvloadid IN(104, 105)) x ON m.pid = x.pid
+                  WHERE rvloadid IN(100, 101)) x ON m.pid = x.pid
               WHERE
                 m.pid IS NULL
       						
@@ -468,23 +465,6 @@ BEGIN
   AND mx.stamp <= CURRENT_DATE - 1
   ORDER BY
     mx.pid
-  ;
-
-  -- Smažu pidy status 1, tam kde je ownid = 51
-  DELETE FROM rel_pub.crp_unpublish_list u
-  USING
-    (
-      SELECT 
-        mid,
-        pid,
-        ownid,
-        ownid_desc,
-        status
-      FROM 
-        pnl.mv_pnl_main_maxdate
-      WHERE status = 1 AND ownid = 51 AND timeattid = 0
-    ) sqry
-  WHERE u.pid = sqry.pid
   ;
 
   -- Přidám zdemolované na seznam
@@ -528,7 +508,7 @@ BEGIN
       FROM 
         rel_pub.crp_unpublish_list
     ) sqry
-  WHERE p.pid = sqry.pid AND p.rvloadid IN (104, 105)
+  WHERE p.pid = sqry.pid AND p.rvloadid IN (100, 101)
   ;
 
 --** Tady je NOTICE **--
