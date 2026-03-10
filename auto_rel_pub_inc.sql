@@ -623,7 +623,6 @@ BEGIN
 
     ---------------------------------------------------------
     -- Prusecik kolacu bufferu a tripu. obe tabulky by mely byt naindexovane. panely o dotaz vyse, tripy od RM
-    --TRUNCATE rel_pub.crp_intersection;
 
 --** Tady je NOTICE **--	
     RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Calculating intersection.';
@@ -631,8 +630,9 @@ BEGIN
     -- Výpočet všech intersekcí, prusecik kolacu bufferu a tripu.
     TRUNCATE rel_pub.crp_intersection;
     INSERT INTO rel_pub.crp_intersection
+      (mid, sid, week_day_name, week_day_type)
     SELECT
-      a.mid, b.sid--, st_length(geography(st_intersection(a.buffer_geom,b.geom))) as intrs_len
+      a.mid, b.sid, b.week_day_name, b.week_day_type
     FROM
       rel_pub.crp_geom_panel a
       INNER JOIN rel_pub.crp_routing b 
@@ -661,7 +661,8 @@ BEGIN
     --Celkový seznam, naplnění tabulky, nejprve ty, co mají průsečík s trasou, pak se sem pak přidají panely bez průsečíku
     TRUNCATE rel_pub.crp_evidence;
     INSERT INTO rel_pub.crp_evidence
-    SELECT mid, sid
+  		(mid, sid, week_day_name, week_day_type)
+    SELECT mid, sid, week_day_name, week_day_type
     FROM rel_pub.crp_intersection;
 
 --** Tady je NOTICE **--
@@ -675,7 +676,7 @@ BEGIN
       pid,
       the_geom,
       buffer_geom,
-      vac_all_2
+      vac_all_1
     FROM
       rel_pub.crp_geom_panel 
     WHERE intersection_type = 'SUBSTITUTE';
@@ -689,9 +690,9 @@ BEGIN
         -- 1. Pro každý bod T2 najdeme 20 geometricky nejbližších bodů T1
         SELECT
             t2.mid AS mid_woi,
-            t2.vac_all_2 AS vac_woi,
+            t2.vac_all_1 AS vac_woi,
             t1.mid AS mid_near,
-            t1.vac_all_2 AS vac_near,
+            t1.vac_all_1 AS vac_near,
             ST_Distance(t2.the_geom, t1.the_geom) AS distance,
             ROW_NUMBER() OVER (
                 PARTITION BY t2.mid
@@ -701,9 +702,8 @@ BEGIN
         FROM
             rel_pub.crp_panel_wo_its t2,
             rel_pub.crp_all_panel t1 -- Používáme implicitní JOIN pro KNN dotaz
-        -- WHERE ST_DWithin(t2.geom, t1.geom, 5000) -- Volitelné omezení maximální vzdálenosti (např. 5 km)
-        WHERE
-          t1.intersection_type = 'ORIGINAL'
+        WHERE ST_DWithin(t2.the_geom, t1.the_geom, 5000) -- Volitelné omezení maximální vzdálenosti (např. 5 km)
+        AND t1.intersection_type = 'ORIGINAL'
     )
     , best_match AS (
         -- 2. Z 20 nejbližších vybereme ten s minimálním rozdílem hodnot
@@ -718,9 +718,9 @@ BEGIN
             ) as rn_value -- Pořadí podle rozdílu hodnot
         FROM
             nearest20 n20
-        WHERE
-            n20.rn_geom <= 20 -- Omezíme na 20 nejbližších z hlediska geometrie
-    )
+      WHERE
+          n20.rn_geom <= 20 -- Omezíme na 20 nejbližších z hlediska geometrie
+ 		)
     INSERT INTO rel_pub.crp_nearest20
     SELECT
         bm.mid_woi,
@@ -767,7 +767,7 @@ BEGIN
       a.mid_woi, b.sid
     FROM
       rel_pub.crp_nearest20 a
-      INNER JOIN rel_pub.crp_routing_ps b ON st_intersects(a.buffer_geom, b.geom) AND a.buffer_geom && b.geom
+      INNER JOIN rel_pub.crp_routing b ON st_intersects(a.buffer_geom, b.geom) AND a.buffer_geom && b.geom
     ;
     
     INSERT INTO rel_pub.crp_evidence  
@@ -791,7 +791,7 @@ BEGIN
         mid = b.mid,
         the_geom = b.the_geom,
         buffer_geom = b.buffer_geom,
-        vac_all_2 = b.vac_all_2,
+        vac_all_1 = b.vac_all_1,
         maxdist = b.maxdist,
         intersection_type = b.intersection_type,
         last_vacid = b.last_vacid
@@ -806,7 +806,7 @@ BEGIN
         b.pid,
         b.the_geom,
         b.buffer_geom,
-        b.vac_all_2,
+        b.vac_all_1,
         b.maxdist,
         b.intersection_type,
         b.last_vacid
@@ -821,84 +821,45 @@ BEGIN
     RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' End of panel preparation.';
 
 --** Tady je NOTICE **--
-	  RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Creating ccf_input.';
-
-    TRUNCATE rel_pub.crp_ccf_input;
-    INSERT INTO rel_pub.crp_ccf_input
-    (
-      mid,
-      sid,
-      desc_text,
-      sbjnum,
-      routingmode,
-      pid,
-      tsyear
-    )
-    SELECT 
-      e.mid,
-      e.sid,
-      e.desc_text,
-      o.sbjnum,
-      o.routingmode,
-      m.pid,
-      o.tsyear
-    FROM 
-      rel_pub.crp_evidence e
-      JOIN rel_pub.crp_routing o ON e.sid = o.sid
-      JOIN pnl.pnl_main m ON e.mid = m.mid
-    ;
-      
---** Tady je NOTICE **--
     RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Creating ccf_output.';
 
     TRUNCATE TABLE rel_pub.crp_ts_rots_temp;
     TRUNCATE TABLE rel_pub.crp_ccf_output;
-    TRUNCATE TABLE rel_pub.crp_ims_temp;
-
+    
     -- Optimalizováno, místo původních 4 dotazů na jeden, všechny tripy vloženy do crp_routing
-    INSERT INTO rel_pub.crp_ccf_output (pid, sid, respweight, modality, dayofweek, sbjnum)
+    INSERT INTO rel_pub.crp_ccf_output  (pid, sid, respweight, modality, dayofweek, respondent_id, ts_rots, facepid, faceid)
     SELECT 
-      ci.pid, 
-      ci.sid, 
+      m.pid, 
+      rou.sid, 
       rwi.benchwgt_pp, 
-      ci.routingmode, 
-      rou.dayofweek,
-      rwi.sbjnum
-    FROM 
-      rel_pub.crp_routing rou
-      JOIN rel_pub.crp_ccf_input ci ON rou.sid = ci.sid
-      JOIN rel_pub.crp_resp_weight_input rwi ON rou.sbjnum = rwi.sbjnum
-    WHERE  
-      ci.sbjnum = rwi.sbjnum
+      rou.routingmode, 
+      rou.week_day_name,
+      rwi.respondent_id,
+      rwi.benchwgt_pp * ftv.prob AS ts_rots,
+      f.facepid,
+      f.faceid
+    FROM
+      rel_pub.crp_evidence e
+      JOIN rel_pub.crp_routing rou ON e.sid = rou.sid
+      JOIN pnl.pnl_main m ON e.mid = m.mid
+      JOIN pnl.pnl_facemid f ON e.mid = f.mid
+      JOIN rel_pub.crp_resp_weight_input rwi ON rou.respondent_id = rwi.respondent_id
+      JOIN rel_pub.crp_freq_trips_vector ftv ON rou.week_day_type = ftv.weekdaytype
+    WHERE 
+      rou.trip_freq > ftv.freq_from
+      AND rou.trip_freq <= ftv.freq_to
+      AND rou.week_day_name = ftv.weekdayname
     ;
 
     -- Updatne weekDay
-    UPDATE rel_pub.crp_ccf_output SET dayofweek = LEFT(dayofweek,2);
+    --UPDATE rel_pub.crp_ccf_output SET dayofweek = LEFT(dayofweek,2);
     	
 --** Tady je NOTICE **--
     RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Trips filled to crp_ccf_output.';
   	
-    -- Naplní crp_ims_temp
-    INSERT INTO rel_pub.crp_ims_temp ( 
-      pid, mid, pnlkey, pnldesc2, 
-      facepid, ownid_desc, pnlillum_desc, 
-      pnlmotion_desc, frmwidth, frmheight, pnlvaienv, 
-      pnldesc, district, vac_brutto_weekly_all, vac_brutto_weekly_veh, 
-      vac_brutto_weekly_ped, rots_brutto_weekly_all, rots_brutto_weekly_veh, rots_brutto_weekly_ped)
-    SELECT 
-      pid, mid, pnlkey, pnldesc2, 
-      facepid, ownid_desc, pnlillum_desc, 
-      pnlmotion_desc, frmwidth, frmheight, pnlvaienv, 
-      pnldesc, district, vac_brutto_daily_all*7, vac_brutto_daily_veh*7, 
-      vac_brutto_daily_ped*7, rots_brutto_daily_all*7, rots_brutto_daily_veh*7, rots_brutto_daily_ped*7
-    FROM rel_pub.crp_ims_input_inc;
-
---** Tady je NOTICE **--
-    RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Table crp_ims_temp filled.';
-
     -- Naplní crp_ts_rots_temp
-    INSERT INTO rel_pub.crp_ts_rots_temp ( pid, ts_rots )
-    SELECT pid, SUM(respweight)
+    INSERT INTO rel_pub.crp_ts_rots_temp (pid, ts_rots)
+    SELECT pid, SUM(ts_rots)
     FROM rel_pub.crp_ccf_output
     GROUP BY pid;
 
@@ -907,8 +868,8 @@ BEGIN
 
     -- Updatne TIM_performance
     UPDATE rel_pub.crp_ts_rots_temp trt
-    SET tim_rots = it.rots_brutto_weekly_all, tim_vac = it.vac_brutto_weekly_all
-    FROM rel_pub.crp_ims_temp AS it 
+    SET tim_rots = it.rots_week_all, tim_vac = it.vac_week_all
+    FROM rel_pub.crp_ims_input_inc AS it 
     WHERE trt.pid = it.pid;
 
 --** Tady je NOTICE **--
@@ -922,8 +883,8 @@ BEGIN
 
     -- Updatne VA_Adj
     UPDATE rel_pub.crp_ts_rots_temp SET ts_va_adj = ts_va/ts_freq;
-    
---** Tady je NOTICE **--
+      
+  --** Tady je NOTICE **--
     RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Table crp_ts_rots_temp updated.';
 
     -- Updatne VA a VAC
@@ -937,7 +898,7 @@ BEGIN
     WHERE c.pid = trt.pid;
 
 --** Tady je NOTICE **--
-      RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Table crp_ccf_output updated.';
+		RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Table crp_ccf_output updated.';
 
     -- Final CCF load
 --** Tady je NOTICE **--
@@ -945,30 +906,39 @@ BEGIN
 
     exe_str = 'INSERT INTO 
                   rel_pub.etl_ccf_rel_pub_inc
-                 (
-                  pid,
-                  mid,
-                  facepid,
-                  faceid,
-                  respondent_id,
-                  weekdayname,
-                  resp_weight,
-                  va,
-                  vac,
-                  load_id
-                ) 
-                  SELECT 
-                    crp_ccf_output.pid,
-                    crp_ims_temp.mid, 
-                    crp_ims_temp.facepid, 
-                    0 AS facepid, 
-                    crp_ccf_output.sbjnum, 
-                    LOWER(crp_ccf_output.dayofweek), 
-                    crp_ccf_output.respweight, 
-                    crp_ccf_output.va, 
-                    round(crp_ccf_output.vac), ' || last_load_id || '
-                  FROM rel_pub.crp_ccf_output 
-                    INNER JOIN rel_pub.crp_ims_temp ON crp_ccf_output.pid = crp_ims_temp.pid; ';
+                  (
+                    pid,
+                    mid,
+                    facepid,
+                    faceid,
+                    vacid,
+                    respondent_id,
+                    country,
+                    weekdayname,
+                    resp_weight,
+                    ts_rots,
+                    va,
+                    vac,
+                    load_id
+                  ) 
+                  SELECT DISTINCT
+                    cco.pid,
+                    cgp.mid, 
+                    cco.facepid, 
+                    cco.faceid,
+                    cgp.last_vacid,
+                    cco.respondent_id,
+                    LEFT(cco.respondent_id, 3) AS country, 
+                    LOWER(cco.dayofweek), 
+                    cco.respweight,
+                    cco.ts_rots,
+                    cco.va, 
+                    round(cco.vac), ' || last_load_id || '
+                  FROM rel_pub.crp_ccf_output cco
+                    JOIN rel_pub.crp_geom_panel cgp ON cco.pid = cgp.pid
+                    ; ';
+    
+    
     EXECUTE exe_str;
     
     -- Ošetření NULL hodnot ve výsledku
@@ -1021,13 +991,13 @@ BEGIN
       res.res_release_publish
     WHERE
       pid IN(SELECT pid FROM rel_pub.crp_ims_input_inc)
-      AND rvloadid IN(104, 105)
+      AND rvloadid IN(100, 101)
     ;
       
     -- Continual Release IDS
     INSERT INTO res.res_release_publish 
     SELECT DISTINCT ON (sqry.facepid, sqry.transptype)
-      104::integer as rvloadid, --!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+      100::integer as rvloadid, --!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
       sqry.*
     FROM (
       SELECT DISTINCT
@@ -1054,7 +1024,7 @@ BEGIN
         JOIN pnl.pnl_facemid fm ON v.faceid = fm.faceid
         JOIN pnl.pnl_faces f ON fm.facepid = f.facepid
       WHERE 
-        r.periodid = 2
+        r.periodid = 1
     )sqry
     --WHERE sqry.facepid = 5490
     ORDER BY
@@ -1064,7 +1034,7 @@ BEGIN
     -- Continual Release IMS
     INSERT INTO res.res_release_publish 
     SELECT DISTINCT ON (sqry.facepid, sqry.transptype, sqry.periodid)
-      105::integer as rvloadid, --!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+      101::integer as rvloadid, --!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
       sqry.*
     FROM (
       SELECT DISTINCT
@@ -1091,7 +1061,7 @@ BEGIN
         JOIN pnl.pnl_facemid fm ON v.faceid = fm.faceid
         JOIN pnl.pnl_faces f ON fm.facepid = f.facepid
       WHERE 
-        r.periodid IN (10,11)
+        r.periodid = 200
     )sqry
     ORDER BY
       sqry.facepid, sqry.transptype, sqry.periodid, sqry.vacid DESC
