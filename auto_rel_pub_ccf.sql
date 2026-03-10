@@ -286,92 +286,47 @@ IF i_cnt > 0 THEN
   ;
 
 --** Tady je NOTICE **--
-	RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' End of panel preparation.';
-
---** Tady je NOTICE **--
-  RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Creating ccf_input.';
-
-  TRUNCATE rel_pub.crp_ccf_input;
-  INSERT INTO rel_pub.crp_ccf_input
-  	(
-    	mid,
-      sid,
-      respondent_id,
-      routingmode,
-      pid)
-  SELECT 
-    e.mid,
-    e.sid,
-    o.respondent_id,
-    o.routingmode,
-    m.pid
-  FROM 
-    rel_pub.crp_evidence e
-    JOIN rel_pub.crp_routing o ON e.sid = o.sid
-    JOIN pnl.pnl_main m ON e.mid = m.mid
-  WHERE
-  	m.pid IS NOT NULL AND m.pid <> 0 --Potlačím nespočítané panely.
-  ;
+	RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' End of panel preparation.'; 
   
 --** Tady je NOTICE **--
   RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Creating ccf_output.';
 
 	TRUNCATE TABLE rel_pub.crp_ts_rots_temp;
   TRUNCATE TABLE rel_pub.crp_ccf_output;
-  TRUNCATE TABLE rel_pub.crp_ims_temp;
-
+  
 	-- Optimalizováno, místo původních 4 dotazů na jeden, všechny tripy vloženy do crp_routing
-  INSERT INTO rel_pub.crp_ccf_output (pid, sid, respweight, modality, dayofweek, respondent_id, ts_rots)  
+  INSERT INTO rel_pub.crp_ccf_output (pid, sid, respweight, modality, dayofweek, respondent_id, ts_rots, facepid, faceid)  
   SELECT 
-    ci.pid, 
-    ci.sid, 
+    m.pid, 
+    rou.sid, 
     rwi.benchwgt_pp, 
-    ci.routingmode, 
+    rou.routingmode, 
     rou.week_day_name,
     rwi.respondent_id,
-    --ftv.prob, rwi.benchwgt_pp,
-    rwi.benchwgt_pp * ftv.prob AS ts_rots
-  FROM 
-    rel_pub.crp_routing rou
-    JOIN rel_pub.crp_ccf_input ci ON rou.sid = ci.sid
+    rwi.benchwgt_pp * ftv.prob AS ts_rots,
+    f.facepid,
+    f.faceid
+  FROM
+    rel_pub.crp_evidence e
+    JOIN rel_pub.crp_routing rou ON e.sid = rou.sid
+    JOIN pnl.pnl_main m ON e.mid = m.mid
+    JOIN pnl.pnl_facemid f ON e.mid = f.mid
     JOIN rel_pub.crp_resp_weight_input rwi ON rou.respondent_id = rwi.respondent_id
     JOIN rel_pub.crp_freq_trips_vector ftv ON rou.week_day_type = ftv.weekdaytype
-  WHERE rou.trip_freq > ftv.freq_from
+  WHERE 
+  	rou.trip_freq > ftv.freq_from
     AND rou.trip_freq <= ftv.freq_to
     AND rou.week_day_name = ftv.weekdayname
-    --AND ci.pid = 68
-    --AND rou.tripid = 41323
-    --AND rou.sid = 1683
-    AND 
-      ci.respondent_id = rwi.respondent_id
-    ;
+  ;
 
   --UPDATE rel_pub.crp_ccf_output SET dayofweek = LEFT(dayofweek,2);
 	
 --** Tady je NOTICE **--
   RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Trips filled to crp_ccf_output.';
 
-  -- Naplní crp_ims_temp
-  /*INSERT INTO rel_pub.crp_ims_temp ( 
-    pid, mid, pnlkey, pnldesc2, 
-    facepid, ownid_desc, pnlillum_desc, 
-    pnlmotion_desc, frmwidth, frmheight, pnlvaienv, 
-    pnldesc, district, vac_brutto_weekly_all, vac_brutto_weekly_veh, 
-    vac_brutto_weekly_ped, rots_brutto_weekly_all, rots_brutto_weekly_veh, rots_brutto_weekly_ped)
-  SELECT 
-    pid, mid, pnlkey, pnldesc2, 
-    facepid, ownid_desc, pnlillum_desc, 
-    pnlmotion_desc, frmwidth, frmheight, pnlvaienv, 
-    pnldesc, district, vac_brutto_daily_all*7, vac_brutto_daily_veh*7, 
-    vac_brutto_daily_ped*7, rots_brutto_daily_all*7, rots_brutto_daily_veh*7, rots_brutto_daily_ped*7
-  FROM rel_pub.crp_ims_input;*/
-
---** Tady je NOTICE **--
-  RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Table crp_ims_temp filled.';
-
   -- Naplní crp_ts_rots_temp
-  INSERT INTO rel_pub.crp_ts_rots_temp ( pid, ts_rots )
-  SELECT pid, SUM(respweight)
+  INSERT INTO rel_pub.crp_ts_rots_temp (pid, ts_rots)
+  SELECT pid, SUM(ts_rots)
   FROM rel_pub.crp_ccf_output
   GROUP BY pid;
 
@@ -380,8 +335,8 @@ IF i_cnt > 0 THEN
 
   -- Updatne TIM_performance
   UPDATE rel_pub.crp_ts_rots_temp trt
-  SET tim_rots = it.rots_brutto_weekly_all, tim_vac = it.vac_brutto_weekly_all
-  FROM rel_pub.crp_ims_temp AS it 
+  SET tim_rots = it.rots_week_all, tim_vac = it.vac_week_all
+  FROM rel_pub.crp_ims_input AS it 
   WHERE trt.pid = it.pid;
 
 --** Tady je NOTICE **--
@@ -419,30 +374,38 @@ IF i_cnt > 0 THEN
 
   exe_str = 'INSERT INTO 
                 rel_pub.etl_ccf_rel_pub
-               (
-                pid,
-                mid,
-                facepid,
-                faceid,
-                respondent_id,
-                weekdayname,
-                resp_weight,
-                va,
-                vac,
-                load_id
-              ) 
-                SELECT 
-                  crp_ccf_output.pid,
-                  crp_ims_temp.mid, 
-                  crp_ims_temp.facepid, 
-                  0 AS facepid, 
-                  crp_ccf_output.sbjnum, 
-                  LOWER(crp_ccf_output.dayofweek), 
-                  crp_ccf_output.respweight, 
-                  crp_ccf_output.va, 
-                  round(crp_ccf_output.vac), ' || last_load_id || '
-                FROM rel_pub.crp_ccf_output 
-                  INNER JOIN rel_pub.crp_ims_temp ON crp_ccf_output.pid = crp_ims_temp.pid; ';
+                (
+                  pid,
+                  mid,
+                  facepid,
+                  faceid,
+                  vacid,
+                  respondent_id,
+                  country,
+                  weekdayname,
+                  resp_weight,
+                  ts_rots,
+                  va,
+                  vac,
+                  load_id
+                ) 
+                SELECT DISTINCT
+                  cco.pid,
+                  cap.mid, 
+                  cco.facepid, 
+                  cco.faceid,
+                  cap.last_vacid,
+                  cco.respondent_id,
+                  LEFT(cco.respondent_id, 3) AS country, 
+                  LOWER(cco.dayofweek), 
+                  cco.respweight,
+                  cco.ts_rots,
+                  cco.va, 
+                  round(cco.vac), ' || last_load_id || '
+                FROM rel_pub.crp_ccf_output cco
+				  				JOIN rel_pub.crp_all_panel cap ON cco.pid = cap.pid
+                  ; ';
+                  
   EXECUTE exe_str;
 		
   -- Evidence zpracovaných panelů v jednotlivých loadech
