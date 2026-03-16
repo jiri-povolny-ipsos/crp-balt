@@ -2,20 +2,20 @@
 *
 *	Vyrobil: Jirka Povolný, 2.2.2024
 *
-*	Pouští se z fce auto_rel_pub_inc, protože potřebuje tabulku rel_pub.crp_geom_panel
-*	naplněnou správnými midy. Naplní tabulku rel_pub.crp_ims_input_inc, která se použije
-*	jako vstup automatickému výpočtu CCF na denní bázi.
+*	Pouští se z fce auto_rel_pub, protože potřebuje tabulku rel_pub.crp_all_panel
+*	naplněnou správnými midy. Naplní tabulku rel_pub.crp_ims_input
 *
 **********************************************************************************************/
 DECLARE
   i_cnt integer;				-- Počet záznamů ke zpracování
   
 BEGIN
---*****--		
-  RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Function ims_input_inc() is starting.';
 
-  TRUNCATE TABLE rel_pub.crp_ims_input_inc;
-	INSERT INTO rel_pub.crp_ims_input_inc
+--*****--		
+  RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Function ims_input_ccf() is starting.';
+
+  TRUNCATE TABLE rel_pub.crp_ims_input;
+  INSERT INTO rel_pub.crp_ims_input
   (
     pid,
     mid,
@@ -42,26 +42,27 @@ BEGIN
       JOIN pnl.pnl_faces f2 ON f.facepid = f2.facepid
       JOIN code.code_pnlsubtype s ON a.pnlsubtype = s.pnlsubtype
     WHERE 
-      a.mid IN(SELECT mid FROM rel_pub.crp_geom_panel)
+      a.mid IN(SELECT mid FROM rel_pub.crp_all_panel)
       AND(a.pnlmotion <> 'D' OR (a.pnlmotion = 'D' AND f2.pos = 1))
       AND v.vacid IN(SELECT DISTINCT ON (a.faceid) a.vacid
-                      FROM vai_vac_res a JOIN rel_pub.crp_geom_panel b ON a.mid = b.mid
+                      FROM vai_vac_res a JOIN rel_pub.crp_all_panel b ON a.mid = b.mid
                       --WHERE a.valid = 1
                       ORDER BY a.faceid,
                                a.vacid DESC
                       )
   ;
-
-	SELECT COUNT(*) INTO i_cnt FROM rel_pub.crp_ims_input_inc;
+  
+  
+	SELECT COUNT(*) INTO i_cnt FROM rel_pub.crp_ims_input;
 --*****--
-  RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Function ims_input_inc(), num of recs: ' || i_cnt ||'.';
+  RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Function ims_input_ccf(), num of recs: ' || i_cnt ||'.';
 
-  UPDATE rel_pub.crp_ims_input_inc  SET pnlvaienv = 'Roadside' WHERE pnlvaienv = 'EA';
-  UPDATE rel_pub.crp_ims_input_inc  SET pnlvaienv = 'Indoor' WHERE pnlvaienv = 'EB';
+  UPDATE rel_pub.crp_ims_input  SET pnlvaienv = 'Roadside' WHERE pnlvaienv = 'EA';
+  UPDATE rel_pub.crp_ims_input  SET pnlvaienv = 'Indoor' WHERE pnlvaienv = 'EB';
 
   -- vysledky z round ------------------------------------------------------------------
   -- VAC
-  UPDATE rel_pub.crp_ims_input_inc a 
+  UPDATE rel_pub.crp_ims_input a 
   SET 
   	vac_week_all = b.vac
 	FROM 
@@ -71,7 +72,7 @@ BEGIN
     b.periodid = 1 AND
     b.transptype = 'ALL'
   ;
-	UPDATE rel_pub.crp_ims_input_inc a 
+	UPDATE rel_pub.crp_ims_input a 
   SET 
   	vac_week_veh = b.vac
 	FROM 
@@ -81,7 +82,7 @@ BEGIN
     b.periodid = 1 AND
     b.transptype = 'VEH'
   ;
-	UPDATE rel_pub.crp_ims_input_inc a 
+	UPDATE rel_pub.crp_ims_input a 
   SET 
   	vac_week_pub = b.vac
 	FROM 
@@ -91,7 +92,7 @@ BEGIN
     b.periodid = 1 AND
     b.transptype = 'PUB'
   ;
-	UPDATE rel_pub.crp_ims_input_inc a 
+	UPDATE rel_pub.crp_ims_input a 
   SET 
   	vac_week_ped = b.vac
 	FROM 
@@ -101,7 +102,7 @@ BEGIN
     b.periodid = 1 and
     b.transptype = 'PED'
   ;
-	UPDATE rel_pub.crp_ims_input_inc a 
+	UPDATE rel_pub.crp_ims_input a 
   SET 
   	vac_week_bic = b.vac
 	FROM 
@@ -114,7 +115,7 @@ BEGIN
 		
   ----------------------------------------------
   -- ROTS
-  UPDATE rel_pub.crp_ims_input_inc a 
+  UPDATE rel_pub.crp_ims_input a 
   SET 
     rots_week_all = b.rots
   FROM 
@@ -124,7 +125,7 @@ BEGIN
     AND b.periodid = 1 
     AND b.transptype = 'ALL'
   ;
-  UPDATE rel_pub.crp_ims_input_inc a 
+  UPDATE rel_pub.crp_ims_input a 
   SET 
     rots_week_veh = b.rots
   FROM 
@@ -134,7 +135,7 @@ BEGIN
     AND b.periodid = 1 
     AND b.transptype = 'VEH'
   ;
-  UPDATE rel_pub.crp_ims_input_inc a 
+  UPDATE rel_pub.crp_ims_input a 
   SET 
     rots_week_pub = b.rots
   FROM 
@@ -143,7 +144,7 @@ BEGIN
     a.vacid = b.vacid 
     AND b.periodid = 1 
     AND b.transptype = 'PUB'
-  ;UPDATE rel_pub.crp_ims_input_inc a 
+  ;UPDATE rel_pub.crp_ims_input a 
   SET 
     rots_week_ped = b.rots
   FROM 
@@ -152,7 +153,7 @@ BEGIN
     a.vacid = b.vacid 
     AND b.periodid = 1 
     AND b.transptype = 'PED'
-  ;UPDATE rel_pub.crp_ims_input_inc a 
+  ;UPDATE rel_pub.crp_ims_input a 
   SET 
     rots_week_bic = b.rots
   FROM 
@@ -165,35 +166,35 @@ BEGIN
      
   ----------------------------------------------
   -- VA
-  UPDATE rel_pub.crp_ims_input_inc  
+  UPDATE rel_pub.crp_ims_input  
   SET 
     va_week_all = vac_week_all:: DOUBLE PRECISION/rots_week_all:: DOUBLE PRECISION
   WHERE 
     vac_week_all <> 0
     AND rots_week_all <> 0
   ;
-  UPDATE rel_pub.crp_ims_input_inc 
+  UPDATE rel_pub.crp_ims_input 
   SET 
     va_week_veh = vac_week_veh:: DOUBLE PRECISION/rots_week_veh:: DOUBLE PRECISION
   WHERE 
     rots_week_veh <> 0
     AND rots_week_veh <> 0
   ;
-  UPDATE rel_pub.crp_ims_input_inc  
+  UPDATE rel_pub.crp_ims_input  
   SET 
     va_week_pub = vac_week_pub :: DOUBLE PRECISION/rots_week_pub :: DOUBLE PRECISION
   WHERE 
     rots_week_pub <> 0
     AND rots_week_pub <> 0
   ;
-	UPDATE rel_pub.crp_ims_input_inc  
+	UPDATE rel_pub.crp_ims_input  
   SET 
     va_week_ped = vac_week_ped :: DOUBLE PRECISION/rots_week_ped :: DOUBLE PRECISION
   WHERE 
     rots_week_ped <> 0
     AND rots_week_ped <> 0
   ;
-	UPDATE rel_pub.crp_ims_input_inc  
+	UPDATE rel_pub.crp_ims_input  
   SET 
     va_week_bic = vac_week_bic :: DOUBLE PRECISION/rots_week_bic :: DOUBLE PRECISION
   WHERE 
@@ -201,18 +202,18 @@ BEGIN
     AND rots_week_bic <> 0
   ;
 	
-	SELECT COUNT(*) INTO i_cnt FROM rel_pub.crp_ims_input_inc;
+	SELECT COUNT(*) INTO i_cnt FROM rel_pub.crp_ims_input;
 --*****--
-  RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Function ims_input_inc(), num of recs on the end: ' || i_cnt ||'.';
+  RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Function ims_input_ccf(), num of recs on the end: ' || i_cnt ||'.';
 
 --*****--
-  RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Function ims_input_inc() end.';
+  RAISE NOTICE '%', CLOCK_TIMESTAMP() || ' Function ims_input_ccf() end.';
 	
-	PERFORM rel_pub.log_msg('INFO', 'fce:create_ims_input_inc', 'The function completed successfully.');
+	PERFORM rel_pub.log_msg('INFO', 'fce:create_ims_input_ccf', 'The function completed successfully.');
   
 EXCEPTION
 WHEN others THEN
   RAISE NOTICE 'exception: %', SQLERRM;
-  PERFORM rel_pub.log_msg('ERROR', 'create_ims_input_inc', 'Error occured: ' || SQLERRM);
+  PERFORM rel_pub.log_msg('ERROR', 'create_ims_input_ccf', 'Error occured: ' || SQLERRM);
 
 END;
