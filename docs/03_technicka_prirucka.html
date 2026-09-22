@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<title>CRP BALT – technická příručka</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; line-height: 1.55; color: #172b4d;
+         max-width: 980px; margin: 0 auto; padding: 24px 32px 80px; background: #fff; }
+  h1 { border-bottom: 3px solid #0052cc; padding-bottom: 10px; }
+  h2 { border-bottom: 1px solid #dfe1e6; padding-bottom: 6px; margin-top: 44px; }
+  h3 { margin-top: 28px; }
+  h4 { margin-top: 20px; }
+  code { background: #f4f5f7; padding: 1px 5px; border-radius: 3px; font-family: Consolas, "Courier New", monospace;
+         font-size: 0.92em; }
+  pre { background: #f4f5f7; border: 1px solid #dfe1e6; border-radius: 4px; padding: 12px 14px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0 20px; }
+  th, td { border: 1px solid #dfe1e6; padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f4f5f7; }
+  .note, .warn, .todo { border-left: 4px solid; padding: 10px 14px; margin: 16px 0; background: #f4f5f7; }
+  .note { border-color: #0052cc; }
+  .warn { border-color: #de350b; background: #fff2f0; }
+  .todo { border-color: #ff991f; background: #fffae6; }
+  .toc { background: #f4f5f7; border: 1px solid #dfe1e6; border-radius: 4px; padding: 14px 22px; }
+  .toc ul { margin: 4px 0; }
+  .status-ok { color: #006644; font-weight: bold; }
+  .status-warn { color: #ff8b00; font-weight: bold; }
+  .status-err { color: #de350b; font-weight: bold; }
+  small.hint { color: #5e6c84; }
+</style>
+</head>
+<body>
+
+<h1>CRP BALT – technická příručka</h1>
+
+<p><em>Určeno pro technicky zdatné kolegy, kteří se s CRP BALT mohou setkat při provozu, ladění nebo předávání
+znalostí. Zdroj: repozitář <code>crp-balt</code> (GitHub, <code>jiri-povolny-ipsos</code>), stav k 22.9.2026.
+Aktuální detaily (přesná jména sloupců, WHERE podmínky) vždy ověřuj přímo v repozitáři – tenhle dokument je
+zjednodušený přehled pro Confluence, ne náhrada za DDL.</em></p>
+
+<div class="toc">
+<strong>Obsah</strong>
+<ul>
+  <li><a href="#prehled">1. Co je CRP BALT</a></li>
+  <li><a href="#repo">2. Struktura repozitáře</a></li>
+  <li><a href="#proces">3. Proces CRP BALT</a>
+    <ul>
+      <li><a href="#spousteni">3.1 Spouštění</a></li>
+      <li><a href="#funkce">3.2 Funkce</a></li>
+      <li><a href="#tok">3.3 Datový tok denního běhu</a></li>
+      <li><a href="#schemata">3.4 Cizí schémata</a></li>
+    </ul>
+  </li>
+  <li><a href="#slovnik">4. Datový slovník (přehled)</a></li>
+  <li><a href="#historie">5. Provozní historie a opravy</a></li>
+  <li><a href="#monitoring">6. Noční monitoring – nástroj night_report</a></li>
+  <li><a href="#teams-zprava">7. Jak číst hlášení v Teams</a></li>
+  <li><a href="#flow">8. Teams kanál a Power Automate flow</a></li>
+  <li><a href="#bezpecnost">9. Bezpečnost a přístupy</a></li>
+  <li><a href="#otevrene">10. Otevřené otázky</a></li>
+</ul>
+</div>
+
+<h2 id="prehled">1. Co je CRP BALT</h2>
+
+<p><strong>CRP BALT</strong> je regionální instance procesu <strong>CRP – Continuous Release Publishing</strong>
+pro Pobaltí (Litva, Lotyšsko, Estonsko). Proces denně přepočítává a publikuje výkony reklamních panelů
+(<strong>VAC</strong> – vizuálně adjustované kontakty) ze systému <strong>IMS</strong> do systému
+<strong>IDS</strong>.</p>
+
+<p>Vstupem jsou naměřená/modelovaná data o trasách respondentů (schémata <code>res</code>, <code>vai</code>,
+<code>pnl</code>), výstupem je publikovaná tabulka <code>res.res_release_publish</code> a ETL tabulka
+<code>rel_pub.etl_ccf_rel_pub_inc</code>, které čte cílový systém IDS (mimo tento repozitář).</p>
+
+<table>
+<tr><th>Databáze</th><td><code>imsbalt_prod</code>, PostgreSQL 9.3.10, schéma <code>rel_pub</code></td></tr>
+<tr><th>Sesterský proces</th><td>CRP ZA – stejná architektura, samostatná databáze a mírně odlišný stav kódu
+(viz <a href="01_proces_crp_balt.md">01_proces_crp_balt.md</a>, sekce „Zjištěné rozdíly oproti CRP ZA")</td></tr>
+<tr><th>Vlastník kódu</th><td>Jiří Povolný (docstringy funkcí v <code>rel_pub</code> uvádí „Vyrobil: Jirka
+Povolný")</td></tr>
+</table>
+
+<div class="note">
+<strong>Poznámka k terminologii:</strong> v kódu i datech se prolínají dvě konvence pojmenování –
+<code>pid</code> (panel ID, identifikuje reklamní plochu jako takovou) a <code>mid</code> (modifikace panelu –
+konkrétní geometrická/fyzická verze panelu, panel může mít v čase víc modifikací). <code>faceid</code>/
+<code>facepid</code> pak identifikují jednotlivou tvář (face) vícetvářového panelu. Podrobný datový slovník viz
+kapitola 4.
+</div>
+
+<h2 id="repo">2. Struktura repozitáře</h2>
+
+<table>
+<thead><tr><th>Adresář</th><th>V gitu?</th><th>Obsah</th></tr></thead>
+<tbody>
+<tr><td><code>ddl/</code></td><td>ano</td><td>Čtecí export schématu <code>rel_pub</code> (<code>pg_dump</code>).
+Neupravuje se ručně – při nové produkční změně se nahradí čerstvým exportem.</td></tr>
+<tr><td><code>docs/</code></td><td>ano</td><td>Dokumentace procesu – popis funkcí, datový tok, datový slovník
+a tenhle dokument.</td></tr>
+<tr><td><code>sql/</code></td><td>ano</td><td>Nasaditelné opravy funkcí a jednorázové zásahy do dat, s hlavičkami
+(Vytvořil/Vytvořeno dne, popis změny).</td></tr>
+<tr><td><code>tools/night_report/</code></td><td>ano (kromě configu)</td><td>Nástroj nočního monitoringu – viz
+kapitola 6.</td></tr>
+<tr><td><code>files/</code></td><td>ne</td><td>Lokální kopie provozních souborů ze serveru (např. spouštěcí
+dávka), jen pro referenci.</td></tr>
+<tr><td><code>analysis/</code></td><td>ne</td><td>Ad hoc analytické výstupy a kontrolní SQL skripty z ladění
+provozních problémů – lokální, nejsou sdílené.</td></tr>
+</tbody>
+</table>
+
+<h2 id="proces">3. Proces CRP BALT</h2>
+
+<h3 id="spousteni">3.1 Spouštění</h3>
+
+<p>Denní běh startuje <strong>scheduled task na serveru v 01:45</strong>. Ten jen zavolá <code>psql</code>
+a nechá běžet vstupní funkci:</p>
+
+<pre><code>psql.exe -c "SELECT * FROM rel_pub.auto_rel_pub_inc();" -p 54890 -U postgres imsbalt_prod &gt;&gt; crp_output.log 2&gt;&amp;1</code></pre>
+
+<p>Veškerý průběžný výstup (<code>RAISE NOTICE</code>) končí v <code>crp_output.log</code> na serveru. Samotná
+dávka ani scheduler nejsou součástí tohoto repozitáře.</p>
+
+<div class="warn">
+<strong>Na co si dát pozor:</strong> <code>auto_rel_pub_inc()</code> má na konci
+<code>EXCEPTION WHEN others</code>, který chybu odchytí a zaloguje. <code>psql</code> proto skončí
+<strong>úspěšně</strong> i v případě, že celý běh spadl a rollbackoval se – přes návratový kód dávky se pád
+nepozná. Jediné spolehlivé místo je <code>rel_pub.crp_log_table</code> (řádek typu <code>ERROR</code>), případně
+mezera v číslování <code>load_id</code> (sekvence se spotřebuje i u běhu, který se zahodil). Přesně tohle
+detekuje a hlídá nástroj <code>night_report</code> – viz kapitola 6.
+</div>
+
+<p>Plný přepočet <code>auto_rel_pub_ccf()</code> a utilita <code>re_publish_crp()</code> se spouští ručně, ne
+scheduled taskem.</p>
+
+<h3 id="funkce">3.2 Funkce</h3>
+
+<p>Schéma <code>rel_pub</code> obsahuje 7 plpgsql funkcí:</p>
+
+<table>
+<thead><tr><th>Funkce</th><th>Volá se</th><th>Účel</th></tr></thead>
+<tbody>
+<tr><td><code>auto_rel_pub_ccf()</code></td><td>ručně</td>
+<td>Plný/inicializační přepočet CCF přes všechny relevantní panely.</td></tr>
+<tr><td><code>auto_rel_pub_inc()</code></td><td>denně, scheduler</td>
+<td>Přírůstkový denní přepočet CCF <strong>a jediná funkce, která reálně publikuje</strong> do
+<code>res.res_release_publish</code> a <code>rel_pub.etl_ccf_rel_pub_inc</code>. Na konci navíc plní cache pro
+dynamické VA.</td></tr>
+<tr><td><code>create_ims_input_ccf()</code></td><td>z <code>auto_rel_pub_ccf()</code></td>
+<td>Naplní <code>rel_pub.crp_ims_input</code> – snapshot vlastností a týdenních VAC/ROTS/VA panelů pro plný
+běh.</td></tr>
+<tr><td><code>create_ims_input_inc()</code></td><td>z <code>auto_rel_pub_inc()</code></td>
+<td>Totéž, ale do <code>rel_pub.crp_ims_input_inc</code> pro přírůstkový běh.</td></tr>
+<tr><td><code>f_fill_crp_cache_temp()</code></td><td>z <code>auto_rel_pub_inc()</code></td>
+<td>Dopočítá dynamickou viditelnost pro digitální/pohyblivé panely (<code>pnlmotion = 'D'</code>) a uloží do
+cache <code>ids.ids_vac_calc_campaign_cache2</code>.</td></tr>
+<tr><td><code>log_msg()</code></td><td>ze všech ostatních funkcí</td>
+<td>Zapíše řádek do <code>rel_pub.crp_log_table</code> (perzistentní log).</td></tr>
+<tr><td><code>re_publish_crp()</code></td><td>ručně</td>
+<td>Bez přepočtu znovu naplní <code>res.res_release_publish</code> přímo z výsledků VAC – jednorázová
+„reset &amp; republish" utilita.</td></tr>
+</tbody>
+</table>
+
+<h3 id="tok">3.3 Datový tok denního běhu (<code>auto_rel_pub_inc()</code>)</h3>
+
+<ol>
+<li><strong>Výběr panelů ke zpracování</strong> – panely změněné za poslední den, ručně přidané přes
+<code>crp_missing</code>, „oddemolované" panely a panely vrácené z fronty přepočtu.</li>
+<li><strong>Doplnění posledního VAC</strong> k panelu.</li>
+<li><strong>Správa nespočítaných panelů</strong> (<code>crp_no_calc_inc</code>) – panely bez VAC nebo s chybou
+se zařadí do fronty přepočtu <code>oper.oper_vac_queue</code>; panely s trvalou chybou skončí v
+<code>crp_pnl_to_revise</code>.</li>
+<li><strong>Cache pro demolované panely</strong> – úklid <code>ids.ids_vac_calc_campaign_cache2</code>.</li>
+<li><strong>Průsečíky s trasami</strong> – prostorový průnik bufferu panelu s trasami respondentů; panely bez
+přímého průsečíku se dohledají přes 20 geometricky nejbližších panelů s podobnou hodnotou VAC.</li>
+<li><strong>CCF výpočet</strong> – kombinace trasy respondenta, jeho váhy a frekvenční distribuce dá technickou
+ROTS, z poměru k IMS vstupu se dopočítá finální VA/VAC.</li>
+<li><strong>Zápis do <code>etl_ccf_rel_pub_inc</code></strong> – záznamy s <code>NULL</code>/zápornou VA nebo VAC
+se přesunou do <code>crp_pnl_to_revise</code>.</li>
+<li><strong>Publish do <code>res.res_release_publish</code></strong> – <code>rvloadid = 100</code> (IDS) a
+<code>rvloadid = 101</code> (IMS). Souběžně se z <code>crp_unpublish_list</code> odpublikují panely, které se
+přestaly kvalifikovat.</li>
+<li><strong>Cache dynamické viditelnosti</strong> pro digitální panely – autor kódu tuhle část označuje
+komentářem jako „test režim".</li>
+</ol>
+
+<p>Podrobný popis každého kroku s odkazy na konkrétní SQL viz
+<a href="01_proces_crp_balt.md">01_proces_crp_balt.md</a>.</p>
+
+<h3 id="schemata">3.4 Cizí schémata (mimo tento repozitář)</h3>
+
+<table>
+<thead><tr><th>Schéma</th><th>Jak se používá</th></tr></thead>
+<tbody>
+<tr><td><code>pnl</code></td><td>Zdroj dat o panelech (geometrie, faces, stavy, demolice). Jen čtení.</td></tr>
+<tr><td><code>vai</code></td><td>Poslední VAC výpočet k panelu; segmenty trasy. Jen čtení.</td></tr>
+<tr><td><code>res</code></td><td>Zdroj VAC/ROTS výsledků; <code>res_release_publish</code> je hlavní
+<strong>výstup</strong>.</td></tr>
+<tr><td><code>topo</code></td><td>PostGIS typ geometrie.</td></tr>
+<tr><td><code>fnc</code></td><td>Pomocné funkce (aktuální navteq verze, triggerové procedury).</td></tr>
+<tr><td><code>oper</code></td><td>Fronta pro dopočet VAC nespočítaných panelů.</td></tr>
+<tr><td><code>ids</code></td><td>Cache dynamické viditelnosti pro digitální panely.</td></tr>
+<tr><td><code>code</code></td><td>Číselník podtypů panelu.</td></tr>
+<tr><td><code>vac8s</code>, <code>vai_subl</code></td><td>Výpočet dynamické VA pro pohyblivé/digitální
+panely.</td></tr>
+</tbody>
+</table>
+
+<h2 id="slovnik">4. Datový slovník (přehled)</h2>
+
+<p>Schéma <code>rel_pub</code> má 39 tabulek. Plný slovník se všemi sloupci je v
+<a href="02_datovy_slovnik.md">02_datovy_slovnik.md</a> – tady jen orientační mapa podle role v procesu:</p>
+
+<table>
+<thead><tr><th>Skupina</th><th>Hlavní tabulky</th></tr></thead>
+<tbody>
+<tr><td>Seznam panelů ke zpracování</td><td><code>crp_all_panel</code>, <code>crp_geom_panel</code>
+(+ <code>_temp</code>/<code>_log</code>)</td></tr>
+<tr><td>Průsečíky s trasami / evidence</td><td><code>crp_intersection</code>, <code>crp_evidence</code>,
+<code>crp_nearest20</code>, <code>crp_panel_wo_its</code></td></tr>
+<tr><td>CCF výpočet</td><td><code>crp_ccf_output</code>, <code>crp_ts_rots_temp</code>,
+<code>crp_control_sum</code></td></tr>
+<tr><td>Snapshot vstupu z IMS</td><td><code>crp_ims_input</code>, <code>crp_ims_input_inc</code>
+(+ <code>_log</code>)</td></tr>
+<tr><td>Fronta přepočtu / problémové panely</td><td><code>crp_no_calc_inc</code>,
+<code>crp_pnl_to_revise</code>, <code>crp_bad_navteq</code>, <code>crp_missing</code>,
+<code>crp_unpublish_list</code></td></tr>
+<tr><td>Referenční/importovaná data</td><td><code>crp_routing</code>, <code>crp_resp_weight_input</code>,
+<code>crp_freq_trips_vector</code></td></tr>
+<tr><td>Cache dynamické viditelnosti</td><td><code>crp_spotplans</code>, <code>crp_cache_temp</code>
+(+ <code>_log</code>/<code>_del_log</code>)</td></tr>
+<tr><td>Logování</td><td><code>crp_log_table</code></td></tr>
+<tr><td>Výstup / ETL do IDS</td><td><code>etl_ccf_rel_pub</code>, <code>etl_ccf_rel_pub_inc</code>
+(+ <code>_loads</code>)</td></tr>
+</tbody>
+</table>
+
+<p>Šest tabulek existuje v DDL, ale žádná funkce je nečte ani neplní (historický balast, viz
+<a href="02_datovy_slovnik.md#nepoužívané-tabulky">02_datovy_slovnik.md, sekce Nepoužívané tabulky</a>):
+<code>crp_ims_input2</code>, <code>crp_ims_temp</code>, <code>crp_new_mids</code>, <code>crp_ccf_input</code>,
+<code>crp_ccf_output_inc</code>, <code>crp_freq_trips</code>.</p>
+
+<h2 id="historie">5. Provozní historie a opravy</h2>
+
+<p>Tahle kapitola shrnuje reálné provozní problémy, na které jsme narazili při analýze běhů v září 2026, a co se
+s nimi udělalo. Detailní forenzní rozbor (SQL dotazy, přesná čísla pidů) je v lokálním
+<code>analysis/</code> (není v gitu) – tady jen podstata a stav.</p>
+
+<h3>5.1 Řetězec „nulový rots → division by zero → trvale zaseknuté panely"</h3>
+
+<p>Šlo o jeden kauzální řetězec, ne tři nezávislé chyby, jak se to zprvu jevilo:</p>
+
+<ol>
+<li>Panel dostane VAC výsledek s <code>rots = 0</code> (a zároveň <code>vac = 0</code>).</li>
+<li>Proces ho správně vyřadí do <code>crp_no_calc_inc</code> a zařadí do fronty přepočtu.</li>
+<li>Fronta ho přepočítá, ale výsledek je zase <code>rots = 0</code> – zůstane to nejnovější pro danou plochu.</li>
+<li>Panel se vrátí do zpracování <strong>bez opětovné kontroly</strong> <code>vac_all_1</code>/<code>rots</code>.</li>
+<li><code>create_ims_input_inc()</code> naplní <code>rots_week_all = 0</code>.</li>
+<li>Nechráněné dělení v <code>auto_rel_pub_inc()</code> (<code>ims_va = vac / rots</code>) spadne na
+<code>division by zero</code>.</li>
+<li><code>EXCEPTION WHEN others</code> rollbackne <strong>celý běh</strong>, včetně příznaků
+<code>calculated</code>/<code>processed</code> v <code>crp_no_calc_inc</code>.</li>
+<li>Panel se druhý den vrátí a shodí běh znovu – opakuje se to přesně 4 dny, dokud nevyprší okno
+<code>stamp_in_queue &gt; CURRENT_DATE - 4</code> pro návrat z fronty. Pak panel zůstane navždy zaseknutý
+(<code>in_queue = TRUE</code>, <code>calculated = FALSE</code>).</li>
+<li>Panely legitimně změněné během těch 4 dnů se ztratí úplně – výběr bere jen poslední den, takže po
+rollbacku je už nic znovu nezařadí.</li>
+</ol>
+
+<p><strong>Stav:</strong> opraveno. <code>sql/2026-09-22_fix_auto_rel_pub_inc.sql</code> přidává
+<code>NULLIF()</code> na obě riziková dělení a nový blok, který panely s nulovým <code>rots_week_all</code>
+rovnou přesune do <code>crp_pnl_to_revise</code> místo aby nechal spadnout celý běh.
+<code>sql/2026-09-22_jednorazova_naprava_backlogu.sql</code> jednorázově vrátil do zpracování zaseknuté a
+ztracené panely (celkem 85), u kterých mezitím přepočet vrátil zdravé hodnoty.</p>
+
+<div class="todo">
+<strong>Otevřeno:</strong> stejná dvě nechráněná dělení jsou i v <code>auto_rel_pub_ccf()</code> (plný běh) –
+ta oprava tam zatím nasazená není, protože se spouští jen ručně a projev je hned vidět.
+</div>
+
+<h3>5.2 Zastaralá navteq verze u publikovaných dat</h3>
+
+<p>4 panely měly v IDS i v <code>res.res_release_publish</code> zastaralá data (navteq verze 25q1 místo
+aktuální 26q1) – jejich nová modifikace se nikdy nezpracovala (byla to stejná 4 skupina, co uvízla v bodu 5.1).
+Vlastní kontrola navteq verze v procesu tohle nechytí, protože testuje jen panely, které zrovna jdou do
+zpracování, ne to, co už je publikované. Opraveno stejným jednorázovým skriptem.</p>
+
+<h3>5.3 Filtr <code>ownid = subownid</code> – otevřené rozhodnutí</h3>
+
+<p><code>ownid</code> = majitel reklamní plochy, <code>subownid</code> = pronajímatel, který na ní prodává
+reklamu – někdy jde o tutéž firmu. Podmínka <code>ownid = subownid</code> je ve výběru panelů jen na dvou
+místech (<code>auto_rel_pub_ccf()</code>, <code>auto_rel_pub_inc()</code>), zatímco ostatní dotazy nad stejnými
+daty (včetně <code>re_publish_crp()</code>) ji nemají.</p>
+
+<div class="todo">
+<strong>Otevřeno:</strong> aktuálně tenhle filtr vyřazuje 835 jinak platných panelů z continuous release. Není
+rozhodnuto, jestli jde o záměr (testujeme jen panely, kde plochu prodává její vlastník), nebo o nekonzistenci,
+kterou by bylo dobré sjednotit napříč funkcemi.
+</div>
+
+<h2 id="monitoring">6. Noční monitoring – nástroj night_report</h2>
+
+<p><code>tools/night_report/crp_night_report.py</code> je samostatný Python nástroj, který proces jen
+<strong>pozoruje</strong> – čte databázi výhradně read-only a nic v procesu nemění. Určený ke spuštění
+scheduled taskem po nočním běhu (ten jede v 01:45), typicky ve 04:00.</p>
+
+<h3>6.1 Co dělá</h3>
+
+<ol>
+<li>Zjistí stav dnešního běhu z <code>rel_pub.crp_log_table</code> a klasifikuje ho do jednoho ze 4 stavů
+(viz kapitola 7).</li>
+<li>Sesbírá statistiky a kontroly konzistence IDS vs. IMS (viz kapitola 7).</li>
+<li>Uloží seznamy problémových panelů do CSV s časovým razítkem.</li>
+<li>Sestaví zprávu a pošle ji jako Adaptive Card do Teams kanálu.</li>
+</ol>
+
+<h3>6.2 Konfigurace</h3>
+
+<p>Nástroj si drží vše u sebe v <code>tools/night_report/</code>:</p>
+
+<table>
+<tbody>
+<tr><td><code>config.ini</code></td><td>přihlašovací údaje a nastavení – <strong>v <code>.gitignore</code></strong>,
+nikdy se necommituje</td></tr>
+<tr><td><code>config.ini.example</code></td><td>zaslepený vzor, ten je v repozitáři</td></tr>
+<tr><td><code>logs/</code></td><td>průběžný log (ignorováno v gitu)</td></tr>
+<tr><td><code>exports/</code></td><td>CSV se seznamy panelů (ignorováno v gitu)</td></tr>
+</tbody>
+</table>
+
+<p>Heslo do databáze je v <code>config.ini</code> <strong>obfuskované</strong> (5 náhodných znaků vložených za
+3. znak skutečného hesla – stejný formát jako v sesterském projektu CRP SE). Kód ho před připojením rozkóduje
+funkcí <code>clean_password()</code>. Jde o kosmetickou ochranu proti pohledu přes rameno, ne o skutečné
+zabezpečení – skutečnou ochranou je to, že soubor není v gitu.</p>
+
+<h3>6.3 Spuštění a přepínače</h3>
+
+<pre><code>python crp_night_report.py                  # dnešní běh, odešle do Teams
+python crp_night_report.py --dry-run         # jen vypíše, nic neodesílá (CSV se uloží)
+python crp_night_report.py --date 2026-09-22 # konkrétní den zpětně
+python crp_night_report.py --no-csv          # neukládat CSV se seznamy panelů
+python crp_night_report.py --config jiny\config.ini</code></pre>
+
+<p>Pro scheduled task slouží <code>crp_night_report.bat</code>, který přesměruje veškerý výstup do
+<code>logs/crp_night_report_task.log</code> (na obrazovce tedy při automatickém běhu nic neuvidíš).</p>
+
+<h3>6.4 Návratové kódy</h3>
+
+<p>Tady jde o dvě různé věci, které se snadno spletou: <strong>noční běh CRP procesu</strong>
+(<code>auto_rel_pub_inc()</code> v 01:45, uvnitř databáze) a <strong>běh monitorovacího skriptu</strong>
+(<code>crp_night_report.py</code>, spuštěný scheduled taskem ve 04:00, čte databázi zvenku). Návratový kód
+v téhle kapitole patří <strong>výhradně skriptu</strong> – je to to, co uvidí <code>crp_night_report.bat</code>
+a scheduled task ve Windows (<code>%ERRORLEVEL%</code>). Skript ale svůj vlastní kód odvozuje od toho, co
+zjistil o nočním běhu CRP – proto jsou v tabulce zmíněné obě věci.</p>
+
+<table>
+<thead><tr><th>Kód</th><th>Co skript zjistil o nočním běhu CRP</th><th>Přišla zpráva do Teams?</th></tr></thead>
+<tbody>
+<tr><td><code>0</code></td><td>Noční běh proběhl v pořádku (stav OK/BEZ PANELU), žádná varování.</td>
+<td>Ano.</td></tr>
+<tr><td><code>1</code></td><td>Noční běh proběhl (stav OK/BEZ PANELU), ale jsou varování – typicky
+nesrovnalosti IDS vs. IMS z kapitoly 7.5.</td><td>Ano.</td></tr>
+<tr><td><code>2</code></td><td><strong>Varianta A:</strong> noční běh CRP <em>měl problém</em> (stav CHYBA nebo
+NEPROBEHL, viz 7.1) – skript to správně zjistil a nahlásil.<br>
+<strong>Varianta B:</strong> monitorovací skript se sám nedostal ke zjištění stavu (výpadek databáze, chyba
+v kódu) – zkusí poslat samostatnou zprávu „kontrola SELHALA".<br>
+<strong>Varianta C:</strong> stav CRP běhu byl v pořádku, ale selhalo samotné odeslání do Teams (výpadek
+webhooku).</td>
+<td>A, B: obvykle ano (skript se o odeslání pokusí). C: <strong>ne</strong>.</td></tr>
+</tbody>
+</table>
+
+<div class="note">
+<strong>Praktické pravidlo:</strong> kód <code>2</code> bez zprávy v Teams znamená, že je problém v samotném
+monitoringu (varianta C, případně B, když selže i nouzové odeslání) – tam je potřeba podívat se přímo do
+<code>logs/crp_night_report_task.log</code> na serveru. Kód <code>2</code> se zprávou v Teams znamená, že
+monitoring funguje správně a problém je v samotném CRP procesu – řešení je v obsahu zprávy a v kapitole 5.
+</div>
+
+<p><small class="hint">Dokud nejsou vyřešené otevřené body z kapitoly 10 (zejména nesrovnalosti IDS vs. IMS
+v 7.5), bude nástroj typicky vracet <code>1</code> každý den – to samo o sobě není důvod k poplachu, jen
+odráží dosud nevyřešený stav dat.</small></p>
+
+<h2 id="teams-zprava">7. Jak číst hlášení v Teams</h2>
+
+<p>Tahle kapitola prochází zprávu, kterou nástroj posílá do kanálu, řádek po řádku. Příklad reálné zprávy
+(anonymizovaná čísla jsou orientační, ne aktuální):</p>
+
+<pre><code>CRP BALT - noční běh 22.09.2026 - OK
+
+Load 80, spuštěn 01:45:10, processed = 2
+Zpracováno 46 panelů / 50 ploch, 71488 řádků v etl_ccf_rel_pub_inc, VAC 3230324
+Kontrolní součet: 50 řádků, ts_rots 14537721, ts_vac 3228834
+Publikováno celkem - rvloadid 100: 40380 řádků / 6183 panelů, rvloadid 101: 40380 řádků / 6183 panelů
+
+Statistiky panelů:
+  Zpracováno v běhu                         46
+  Špatná navteq verze (crp_bad_navteq)       0
+  Nespočítané (crp_no_calc_inc)              0
+  K revizi (crp_pnl_to_revise)             117
+
+Stav dalších tabulek - crp_missing 85, crp_cache_temp 0
+Konzistence IDS vs IMS - chybí v IDS: 81, starší modifikace: 4, zastaralý navteqver: 4, osiřelé facepidy: 3
+
+Seznamy panelů uloženy do:
+  bad_navteq: ...\exports\crp_bad_navteq_20260922_162637.csv
+  no_calc: ...\exports\crp_no_calc_20260922_162637.csv
+  to_revise: ...\exports\crp_to_revise_20260922_162637.csv
+  zpracovane: ...\exports\crp_zpracovane_20260922_162637.csv
+
+VAROVÁNÍ:
+  - Živých panelů chybí v IDS: 81.
+  - ...
+
+Odeslano: 2026-09-22 16:26:37</code></pre>
+
+<h3>7.1 Nadpis a stav</h3>
+
+<p>Formát: <code>CRP BALT - noční běh DD.MM.RRRR - STAV</code>. Stav se určuje ze záznamů v
+<code>crp_log_table</code> za daný den:</p>
+
+<table>
+<thead><tr><th>Stav</th><th>Kdy nastane</th><th>Co to znamená</th></tr></thead>
+<tbody>
+<tr><td class="status-ok">OK</td><td>Je záznam o dokončeném běhu <code>auto_rel_pub_inc</code>, bez ERROR
+záznamu, bez „Load did not run".</td><td>Vše v pořádku.</td></tr>
+<tr><td class="status-warn">BEZ PANELU</td><td>Běh proběhl, ale nenašel žádné panely ke zpracování (žádná
+změna za poslední den).</td><td>Normální stav, pokud se v IMS nic nemodifikovalo.</td></tr>
+<tr><td class="status-err">CHYBA</td><td>V logu je za daný den alespoň jeden záznam typu
+<code>ERROR</code>.</td><td>Běh spadl (typicky division by zero) a <strong>rollbackoval se</strong> – vyžaduje
+pozornost, viz kapitola 5.1.</td></tr>
+<tr><td class="status-err">NEPROBEHL</td><td>Za daný den není v <code>crp_log_table</code> vůbec žádný
+záznam.</td><td>Scheduled task na serveru se pravděpodobně nespustil – tohle je jediný způsob, jak to
+odhalit, protože chybějící log se navenek neprojeví ničím jiným.</td></tr>
+</tbody>
+</table>
+
+<h3>7.2 Řádek o loadu</h3>
+
+<p><code>Load N, spuštěn HH:MM:SS, processed = X</code> – <code>N</code> je <code>load_id</code> z
+<code>etl_ccf_rel_pub_loads_inc</code>. Sloupec <code>processed</code> roste, jak si IDS dávku vyzvedává a
+zpracovává; přesnou definici jednotlivých hodnot vlastní systém IDS, ne tento proces. Hodnota <code>0</code> po
+delší době od běhu je varovný signál, že si IDS dávku ještě nepřevzal – proto ho nástroj i samostatně hlídá
+(varování „Load N zatím nemá příznak processed").</p>
+
+<h3>7.3 Zpracováno / kontrolní součet / publikováno</h3>
+
+<ul>
+<li><strong>Zpracováno X panelů / Y ploch</strong> – kolik unikátních <code>pid</code>/<code>faceid</code>
+prošlo výpočtem CCF v tomto loadu.</li>
+<li><strong>VAC</strong> – součet publikovaných hodnot VAC (zaokrouhlené vizuálně adjustované kontakty) za
+tenhle load.</li>
+<li><strong>Kontrolní součet</strong> – nezávislá agregace z <code>crp_control_sum</code> (technická ROTS a VAC
+před zaokrouhlením); slouží jako auditní stopa, historicky se z tabulky nikdy nemaže.</li>
+<li><strong>Publikováno celkem</strong> – aktuální stav <code>res.res_release_publish</code> pro
+<code>rvloadid 100</code> (IDS) a <code>101</code> (IMS), ne jen dnešní přírůstek.</li>
+</ul>
+
+<h3>7.4 Statistiky panelů</h3>
+
+<table>
+<thead><tr><th>Řádek</th><th>Význam</th></tr></thead>
+<tbody>
+<tr><td>Zpracováno v běhu</td><td>Kolik panelů dnešní load skutečně prohnal výpočtem
+(<code>crp_geom_panel_log</code>).</td></tr>
+<tr><td>Špatná navteq verze</td><td>Aktuální počet v <code>crp_bad_navteq</code> – panely s neaktuální verzí
+mapových dat, vyřazené z výpočtu.</td></tr>
+<tr><td>Nespočítané</td><td>Aktuální počet v <code>crp_no_calc_inc</code> – panely čekající ve frontě
+přepočtu. Když tahle hodnota dlouhodobě roste a neklesá, je to signál na řetězec z kapitoly 5.1.</td></tr>
+<tr><td>K revizi</td><td>Aktuální počet v <code>crp_pnl_to_revise</code> – panely s trvalou chybou výpočtu nebo
+NULL/zápornou VA po loadu. Tahle tabulka se historicky nemaže, takže číslo jen roste.</td></tr>
+</tbody>
+</table>
+
+<h3>7.5 Konzistence IDS vs. IMS</h3>
+
+<p>Čtyři kontroly porovnávající živá data v IMS s tím, co skutečně vidí IDS – vznikly při forenzní analýze
+incidentu z kapitoly 5:</p>
+
+<table>
+<thead><tr><th>Ukazatel</th><th>Co znamená nenulová hodnota</th></tr></thead>
+<tbody>
+<tr><td>Chybí v IDS</td><td>Panel je v IMS live (status 3, bez demolice, <code>ownid = subownid</code>), ale
+v <code>ids.v_panel</code> vůbec není. Typicky uvízl ve frontě přepočtu nebo se ztratil při spadlém běhu.</td></tr>
+<tr><td>Starší modifikace</td><td>IDS má u panelu jinou (starší) modifikaci <code>mid</code>, než je aktuální
+v IMS – nová verze panelu se nikdy nezpracovala.</td></tr>
+<tr><td>Zastaralý navteqver</td><td>Panel je v IDS publikovaný s neaktuální verzí mapových dat – důsledek
+předchozího bodu.</td></tr>
+<tr><td>Osiřelé facepidy</td><td>Facepid je v <code>res_release_publish</code>, ale chybí v
+<code>ids.v_panel</code> – obvykle stará plocha digitálního panelu, kterou nový cyklus přestal
+publikovat.</td></tr>
+</tbody>
+</table>
+
+<h3>7.6 Seznamy panelů (CSV)</h3>
+
+<p>Ke každé kategorii (zpracované, špatná navteq verze, nespočítané, k revizi) se ukládá CSV s časovým razítkem
+v názvu (<code>crp_&lt;kategorie&gt;_RRRRMMDD_HHMMSS.csv</code>) do <code>tools/night_report/exports/</code>
+na serveru. Formát: středník jako oddělovač, UTF-8 s BOM (otevře se rovnou v Excelu i s diakritikou). Obsahují
+kromě <code>pid</code>/<code>mid</code> i kontext (<code>pnlkey</code>, <code>pnlmotion</code>,
+<code>geoareaname</code>) a u problémových tabulek příznaky (<code>in_queue</code>, <code>err_vac_res</code>,
+<code>va</code>/<code>vac</code> atd.).</p>
+
+<h3>7.7 Varování</h3>
+
+<p>Blok <strong>VAROVÁNÍ</strong> shrnuje všechny nenulové/problémové hodnoty z předchozích bodů jako věty
+k akci. Pokud je prázdný, zpráva skončí textem „Bez varování." Řádek <code>Odeslano: ...</code> na konci je
+časové razítko odeslání, ne času běhu.</p>
+
+<h2 id="flow">8. Teams kanál a Power Automate flow</h2>
+
+<table>
+<tbody>
+<tr><th>Tým</th><td>CZ-AUM-MGE Data-Team</td></tr>
+<tr><th>Kanál</th><td>CRP-BALT-MONITOR (rozložení „Příspěvky" – vhodné pro sled automatických hlášení)</td></tr>
+<tr><th>Flow</th><td>„Odesílat upozornění webhooku do kanálu - BALT" – vytvořen jako <em>Save As</em> kopie
+existujícího flow pro CRP SE, jen s přesměrovaným kanálem.</td></tr>
+</tbody>
+</table>
+
+<p>Nástroj posílá <strong>Adaptive Card</strong> (ne prostý text) – stejný formát jako CRP SE, aby oba
+projekty sdílely kompatibilní flow:</p>
+
+<pre><code>{
+  "type": "message",
+  "attachments": [{
+    "contentType": "application/vnd.microsoft.card.adaptive",
+    "content": {
+      "type": "AdaptiveCard",
+      "version": "1.4",
+      "body": [
+        {"type": "TextBlock", "text": "&lt;nadpis&gt;", "weight": "Bolder", "size": "Medium"},
+        {"type": "TextBlock", "text": "&lt;text zpravy&gt;", "wrap": true}
+      ]
+    }
+  }]
+}</code></pre>
+
+<div class="warn">
+<strong>Past, na kterou jsme při zakládání narazili:</strong> flow uvnitř má podmínku
+<code>Attachments is null</code> se dvěma větvemi (<code>True</code>/<code>False</code>), <strong>obě
+obsahují vlastní akci „Post card in a chat or channel" se svým vlastním nastavením Tým/Kanál.</strong> Klon
+flow přes Save As zkopíruje obě větve i s původním kanálem CRP SE. Při prvním testu proto zpráva omylem
+dorazila do CRP SE – šla větví <code>False</code> (název větve je matoucí: <code>False</code> = podmínka „je
+null" neplatí = přílohy tam jsou), jejíž akce jsme zapomněli přesměrovat. <strong>Při jakékoli úpravě cílového
+kanálu je nutné upravit obě větve.</strong>
+</div>
+
+<p>Webhook URL (s podpisovým parametrem <code>sig=</code>) je v <code>config.ini</code>, klíč
+<code>webhook_url</code> v sekci <code>[TEAMS]</code>. Vygeneruje se v triggeru flow („Při přijetí požadavku
+webhooku Teams") a je pro každý klon flow unikátní.</p>
+
+<h2 id="bezpecnost">9. Bezpečnost a přístupy</h2>
+
+<ul>
+<li><code>config.ini</code> (kořenový i v <code>tools/night_report/</code>) se <strong>nikdy necommituje</strong> –
+obsahuje přihlašovací údaje do databáze a webhook URL.</li>
+<li>Webhook URL je fakticky tajemství – kdokoliv, kdo ji zná, může do kanálu psát jménem flow. Při rotaci/úniku
+je potřeba URL ve flow resetovat (nebo založit nový flow) a aktualizovat <code>config.ini</code>.</li>
+<li>Obfuskace hesla v configu (viz 6.2) je kosmetická, ne bezpečnostní opatření – nespoléhat na ni jako na
+šifrování.</li>
+<li>Veškerá diagnostika proti produkční databázi (ať už tímhle nástrojem, nebo ad hoc dotazy) by měla jít přes
+read-only spojení (<code>SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY</code> nebo ekvivalent v
+klientovi).</li>
+</ul>
+
+<h2 id="otevrene">10. Otevřené otázky</h2>
+
+<ol>
+<li>Má se <code>NULLIF</code> oprava dělení nulou doplnit i do <code>auto_rel_pub_ccf()</code> (dnes jen v
+<code>auto_rel_pub_inc()</code>)?</li>
+<li>Je filtr <code>ownid = subownid</code> záměr, nebo nekonzistence? Pokud záměr, mají se panely při přiřazení
+subownera z IDS aktivně odpublikovat místo tichého vypadnutí z continuous release?</li>
+<li>Má smysl zavést retenci/úklid starých CSV v <code>tools/night_report/exports/</code>, ať se časem
+nehromadí?</li>
+<li>117 řádků v <code>crp_pnl_to_revise</code> (mnohé staré měsíce) – existuje proces, který je má
+pravidelně procházet a řešit?</li>
+</ol>
+
+</body>
+</html>

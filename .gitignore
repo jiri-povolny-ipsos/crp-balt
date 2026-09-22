@@ -1,1 +1,7 @@
 config.ini
+analysis/
+files/
+tools/night_report/logs/
+tools/night_report/exports/
+__pycache__/
+*.pyc

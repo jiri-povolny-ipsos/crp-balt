@@ -12,6 +12,24 @@ systému IMS do systému IDS. Vstupem jsou naměřená/modelovaná data o trasá
 schémata), výstupem je publikovaná tabulka `res.res_release_publish` a ETL tabulka `rel_pub.etl_ccf_rel_pub_inc`,
 které čte cílový systém IDS (mimo tento repozitář).
 
+## Spouštění
+
+Denní běh startuje **scheduled task na serveru v 01:45**. Ten jen zavolá `psql` a nechá běžet vstupní funkci:
+
+```
+psql.exe -c "SELECT * FROM rel_pub.auto_rel_pub_inc();" -p 54890 -U postgres imsbalt_prod >> crp_output.log 2>&1
+```
+
+Veškerý průběžný výstup (`RAISE NOTICE`) končí v `crp_output.log` na serveru. Samotná dávka ani scheduler nejsou
+součástí tohoto repozitáře.
+
+Pozor na to, jak se navenek projeví chyba: `auto_rel_pub_inc()` má na konci `EXCEPTION WHEN others`, který ji
+odchytí a zaloguje. `psql` proto skončí úspěšně a vrátí prázdný výsledek funkce **i v případě, že celý běh spadl
+a rollbackoval se**. Jediné spolehlivé místo, kde se pád pozná, je `rel_pub.crp_log_table` (řádek typu `ERROR`) –
+případně mezera v číslování `load_id`, protože sekvence se spotřebuje i u běhu, který se zahodil.
+
+Plný přepočet `auto_rel_pub_ccf()` a utilita `re_publish_crp()` se spouštějí ručně, ne scheduled taskem.
+
 ## Funkce – přehled
 
 Schéma `rel_pub` obsahuje 7 plpgsql funkcí:

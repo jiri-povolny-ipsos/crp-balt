@@ -1,0 +1,60 @@
+; =====================================================================
+; Vzor konfigurace nastroju CRP BALT (tools/)
+; ---------------------------------------------------------------------
+; Vytvoril:      Jiri Povolny
+; Vytvoreno dne: 22.9.2026
+; ---------------------------------------------------------------------
+; Zkopirujte jako config.ini vedle tohoto souboru a doplnte skutecne
+; hodnoty. Soubor config.ini je v .gitignore, do repozitare patri jen
+; tenhle zaslepeny vzor.
+; =====================================================================
+
+[LOG]
+log_file = etl_ccf_rel_pub.log
+
+[DATABASE]
+; Produkcni databaze procesu CRP BALT.
+host = <hostname>
+port = 54890
+database = imsbalt_prod
+user = <db_uzivatel>
+; Heslo je obfuskovane: 5 nahodnych znaku vlozenych za 3. znak skutecneho
+; hesla. clean_password() v kodu je zase odstrani (pwd[:3] + pwd[8:]).
+; Stejny format jako v crp_se. Heslo tedy musi mit aspon 8 znaku.
+; Priklad: skutecne "tajne12" -> zapsat "tajXXXXXne12"
+password = <obfuskovane_heslo>
+schema = rel_pub
+
+[NIGHT_REPORT]
+; Nastaveni pro crp_night_report.py. Cela sekce je volitelna, bez ni se pouziji
+; tyto vychozi hodnoty. Relativni cesty se berou vuci adresari nastroje
+; (tools/night_report/), takze si nastroj drzi vystupy u sebe.
+log_file = logs/crp_night_report.log
+export_dir = exports
+
+[TEAMS]
+; Pokud je webhook_url prazdne nebo enabled = false, notifikace se neposilaji.
+; URL vznikne pri zalozeni flow "Post to a channel when a webhook request
+; is received" v aplikaci Workflows v Teams (nebo v make.powerautomate.com).
+; Posila se Adaptive Card, stejny format jako v crp_se.
+enabled = true
+webhook_url = <url_power_automate_flow>
+timeout_sec = 10
+
+[CRP_BALT_MONITOR]
+interval_sec = 60
+retention_days = 30
+log_file = respvac_monitor.log
+monitor_name = crp-server-monitor
+client_addr_filter =
+
+[BRIDGE]
+; Rezidentni HTTP most, ktery prijima prikazy z Teams (pres Power Automate)
+; a odpovida daty z TARGET DB. Poslouchat by mel na 127.0.0.1, pokud
+; k nemu pristupuje dev tunnel / on-premises data gateway na stejnem stroji.
+host = 127.0.0.1
+port = 8765
+; Sdileny tajny retezec - Power Automate ho posle v hlavicce X-Bridge-Token.
+; NASTAV NA DLOUHY NAHODNY RETEZEC (napr. 32+ znaku).
+auth_token = CHANGE_ME_TO_LONG_RANDOM_STRING
+log_file = crp_teams_bridge.log
