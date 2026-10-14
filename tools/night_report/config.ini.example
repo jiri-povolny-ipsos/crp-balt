@@ -31,6 +31,10 @@ schema = rel_pub
 ; (tools/night_report/), takze si nastroj drzi vystupy u sebe.
 log_file = logs/crp_night_report.log
 export_dir = exports
+; rvloadid CRP v res.res_release_publish: IDS (periodid 1) a IMS (periodid 200).
+; Od 14.10.2026 nove CRP 102/103 (puvodne 100/101). Vychozi hodnoty jsou 102 a 103.
+rvloadid_ids = 102
+rvloadid_ims = 103
 
 [TEAMS]
 ; Pokud je webhook_url prazdne nebo enabled = false, notifikace se neposilaji.

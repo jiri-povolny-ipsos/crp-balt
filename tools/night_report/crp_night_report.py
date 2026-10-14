@@ -2,6 +2,12 @@
 
 Vytvořil: Jiří Povolný
 Vytvořeno dne: 22.9.2026
+Změnil: Jiří Povolný
+Změněno dne: 14.10.2026
+Popis změny: nové CRP - publish a kontroly IDS pro rvloadid 102 (IDS) a 103 (IMS) místo 100/101
+    (nastavitelné v [NIGHT_REPORT] rvloadid_ids / rvloadid_ims). Kontroly proti ids.v_panel jen pro
+    rvloadid_ids, dokud ho IDS nemá, vynechají se. Varování (WARNING) z crp_log_table a kontrola
+    souladu cache spotplánů ids.ids_vac_calc_campaign_cache2 s publish.
 
 Čte stav z databáze imsbalt_prod (výhradně read-only), sestaví přehled o posledním
 běhu rel_pub.auto_rel_pub_inc() a pošle ho do Teams přes webhook z config.ini.
@@ -47,6 +53,10 @@ STAV_OK = 'OK'
 STAV_BEZ_PANELU = 'BEZ PANELU'
 STAV_CHYBA = 'CHYBA'
 STAV_NEPROBEHL = 'NEPROBEHL'
+
+# rvloadid nového CRP v res.res_release_publish (přepisuje [NIGHT_REPORT] v config.ini)
+VYCHOZI_RV_IDS = 102
+VYCHOZI_RV_IMS = 103
 
 
 # ---------------------------------------------------------------------------
@@ -103,10 +113,10 @@ class Db:
 # Sběr dat
 # ---------------------------------------------------------------------------
 
-def seber_data(db, den):
+def seber_data(db, den, rv_ids=VYCHOZI_RV_IDS, rv_ims=VYCHOZI_RV_IMS):
     """Vrátí slovník s přehledem o běhu za daný den."""
     zitra = den + dt.timedelta(days=1)
-    d = {'den': den}
+    d = {'den': den, 'rv_ids': rv_ids, 'rv_ims': rv_ims}
 
     # --- Záznamy z logu za daný den -----------------------------------------
     d['log'] = db.radky(
@@ -117,6 +127,7 @@ def seber_data(db, den):
         (den, zitra))
 
     chyby = [z for z in d['log'] if z[1] == 'ERROR']
+    d['log_varovani'] = [z[3] for z in d['log'] if z[1] == 'WARNING']
     hlavni = [z for z in d['log'] if z[2] in ('auto_rel_pub_inc', 'fce:auto_rel_pub_inc')]
 
     if chyby:
@@ -178,34 +189,63 @@ def seber_data(db, den):
     # --- Publish -------------------------------------------------------------
     d['publish'] = db.radky(
         '''SELECT rvloadid, COUNT(*), COUNT(DISTINCT pid)
-           FROM res.res_release_publish WHERE rvloadid IN (100, 101)
-           GROUP BY rvloadid ORDER BY rvloadid''')
+           FROM res.res_release_publish WHERE rvloadid IN (%s, %s)
+           GROUP BY rvloadid ORDER BY rvloadid''', (rv_ids, rv_ims))
+
+    # --- Cache spotplánů -----------------------------------------------------
+    # Digitální vacidy publish bez cache / vacidy v cache, které už nejsou v publish.
+    d['cache'] = db.radek(
+        '''SELECT
+             (SELECT COUNT(*) FROM ids.ids_vac_calc_campaign_cache2 WHERE rvloadid = %s),
+             (SELECT COUNT(DISTINCT p.vacid) FROM res.res_release_publish p
+                JOIN pnl.pnl_main m ON m.mid = p.mid
+               WHERE p.rvloadid = %s AND m.pnlmotion = 'D'
+                 AND NOT EXISTS (SELECT 1 FROM ids.ids_vac_calc_campaign_cache2 c
+                                 WHERE c.rvloadid = p.rvloadid AND c.vacid = p.vacid)),
+             (SELECT COUNT(DISTINCT c.vacid) FROM ids.ids_vac_calc_campaign_cache2 c
+               WHERE c.rvloadid = %s
+                 AND NOT EXISTS (SELECT 1 FROM res.res_release_publish p
+                                 WHERE p.rvloadid = c.rvloadid AND p.vacid = c.vacid))''',
+        (rv_ids, rv_ids, rv_ids))
 
     # --- Konzistence IDS vs IMS ---------------------------------------------
     d['navteqver'] = db.hodnota('SELECT navteq_version FROM fnc.f_params()')
 
-    d['chybi_v_ids'] = db.hodnota(
-        '''SELECT COUNT(*) FROM (
-             SELECT DISTINCT m.pid FROM pnl.mv_pnl_main_maxdate m
-             WHERE m.status = 3 AND m.timeattid = 0 AND m.ownid = m.subownid
-               AND NOT EXISTS (SELECT 1 FROM ids.v_panel v WHERE v.pid = m.pid)
-           ) x''', vychozi=0)
+    # Kontroly proti ids.v_panel jen pro rvloadid, které IDS opravdu má. Dokud IDS
+    # nové CRP nečte, kontrola by hlásila falešně všechny panely jako chybějící.
+    d['ids_rvloadidy'] = [r[0] for r in db.radky(
+        'SELECT DISTINCT rvloadid FROM ids.v_panel ORDER BY 1')]
+    d['ids_kontrola'] = rv_ids in d['ids_rvloadidy']
 
-    d['stary_navteqver'] = db.hodnota(
-        '''SELECT COUNT(DISTINCT v.pid)
-           FROM ids.v_panel v JOIN pnl.pnl_main p ON p.mid = v.mid
-           WHERE p.navteqver <> %s''', (d['navteqver'],), vychozi=0)
+    if d['ids_kontrola']:
+        d['chybi_v_ids'] = db.hodnota(
+            '''SELECT COUNT(*) FROM (
+                 SELECT DISTINCT m.pid FROM pnl.mv_pnl_main_maxdate m
+                 WHERE m.status = 3 AND m.timeattid = 0 AND m.ownid = m.subownid
+                   AND NOT EXISTS (SELECT 1 FROM ids.v_panel v
+                                   WHERE v.rvloadid = %s AND v.pid = m.pid)
+               ) x''', (rv_ids,), vychozi=0)
 
-    d['starsi_modifikace'] = db.hodnota(
-        '''SELECT COUNT(DISTINCT v.pid) FROM ids.v_panel v
-           JOIN pnl.mv_pnl_main_maxdate m
-             ON m.pid = v.pid AND m.status = 3 AND m.timeattid = 0
-           WHERE v.mid <> m.mid''', vychozi=0)
+        d['stary_navteqver'] = db.hodnota(
+            '''SELECT COUNT(DISTINCT v.pid)
+               FROM ids.v_panel v JOIN pnl.pnl_main p ON p.mid = v.mid
+               WHERE v.rvloadid = %s AND p.navteqver <> %s''',
+            (rv_ids, d['navteqver']), vychozi=0)
 
-    d['osirele_facepidy'] = db.hodnota(
-        '''SELECT COUNT(DISTINCT facepid) FROM res.res_release_publish
-           WHERE rvloadid = 100
-             AND facepid NOT IN (SELECT pnlkey::bigint FROM ids.v_panel)''', vychozi=0)
+        d['starsi_modifikace'] = db.hodnota(
+            '''SELECT COUNT(DISTINCT v.pid) FROM ids.v_panel v
+               JOIN pnl.mv_pnl_main_maxdate m
+                 ON m.pid = v.pid AND m.status = 3 AND m.timeattid = 0
+               WHERE v.rvloadid = %s AND v.mid <> m.mid''', (rv_ids,), vychozi=0)
+
+        d['osirele_facepidy'] = db.hodnota(
+            '''SELECT COUNT(DISTINCT facepid) FROM res.res_release_publish
+               WHERE rvloadid = %s
+                 AND facepid NOT IN (SELECT pnlkey::bigint FROM ids.v_panel
+                                     WHERE rvloadid = %s)''', (rv_ids, rv_ids), vychozi=0)
+    else:
+        d['chybi_v_ids'] = d['stary_navteqver'] = None
+        d['starsi_modifikace'] = d['osirele_facepidy'] = None
 
     # --- Statistiky počtu panelů --------------------------------------------
     # Zpracováno = panely, které běh opravdu prohnal výpočtem (z crp_geom_panel_log
@@ -230,6 +270,11 @@ def seber_data(db, den):
     if d['chyby']:
         for chyba in d['chyby']:
             varovani.append('Běh skončil chybou: ' + chyba)
+    for v in d['log_varovani']:
+        varovani.append('Varování v logu běhu: ' + (v or ''))
+    if d['cache'] and (d['cache'][1] or d['cache'][2]):
+        varovani.append('Cache spotplánů %d nesouhlasí s publish: %d digitálních vacidů bez cache, '
+                        '%d vacidů v cache navíc.' % (d['rv_ids'], d['cache'][1], d['cache'][2]))
     if d['revize_dnes'] and d['revize_dnes'][0]:
         varovani.append(
             'Panelů s nulovým rots odloženo k revizi: %d.' % d['revize_dnes'][0])
@@ -370,10 +415,18 @@ def sestav_zpravu(d):
         r.append('Stav dalších tabulek - crp_missing %d, crp_cache_temp %d'
                  % (missing, cache))
 
-    r.append('Konzistence IDS vs IMS - chybí v IDS: %d, starší modifikace: %d, '
-             'zastaralý navteqver: %d, osiřelé facepidy: %d'
-             % (d['chybi_v_ids'], d['starsi_modifikace'],
-                d['stary_navteqver'], d['osirele_facepidy']))
+    if d['cache']:
+        r.append('Cache spotplánů rvloadid %d: %d řádků' % (d['rv_ids'], d['cache'][0]))
+
+    if d['ids_kontrola']:
+        r.append('Konzistence IDS (rvloadid %d) vs IMS - chybí v IDS: %d, starší modifikace: %d, '
+                 'zastaralý navteqver: %d, osiřelé facepidy: %d'
+                 % (d['rv_ids'], d['chybi_v_ids'], d['starsi_modifikace'],
+                    d['stary_navteqver'], d['osirele_facepidy']))
+    else:
+        r.append('Konzistence IDS vs IMS vynechána - ids.v_panel zatím neobsahuje rvloadid %d '
+                 '(obsahuje: %s).' % (d['rv_ids'],
+                                      ', '.join(str(x) for x in d['ids_rvloadidy']) or 'nic'))
 
     if d.get('csv_soubory'):
         r.append('')
@@ -501,10 +554,15 @@ def main():
     if args.export_dir:
         export_adresar = args.export_dir
 
+    rv_ids, rv_ims = VYCHOZI_RV_IDS, VYCHOZI_RV_IMS
+    if 'NIGHT_REPORT' in cfg:
+        rv_ids = int(cfg['NIGHT_REPORT'].get('rvloadid_ids', rv_ids))
+        rv_ims = int(cfg['NIGHT_REPORT'].get('rvloadid_ims', rv_ims))
+
     db = None
     try:
         db = Db(cfg)
-        d = seber_data(db, den)
+        d = seber_data(db, den, rv_ids, rv_ims)
         if not args.no_csv:
             razitko = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
             d['csv_soubory'] = uloz_csv(seber_seznamy(db, d), export_adresar, razitko, log)
